@@ -1,0 +1,49 @@
+# ---- MATLAB ----
+*.asv
+*.mex*
+*.slxc
+*.autosave
+
+# ---- simulator / field data (never published) ----
+*.GRDECL
+*.grdecl
+*.DATA
+*.data
+*.UNRST
+*.UNSMRY
+*.SMSPEC
+*.SLN*
+*.INIT
+*.EGRID
+*.FIN*    
+*.sim/
+*.pet/
+*.xlsx
+*.xls
+
+# ... except the miniature format samples shipped as documentation
+!examples/tiny.GRDECL
+!examples/tiny.SLNSPEC
+
+# ---- MATLAB matrices / results ----
+*.mat
+*.fig
+result/
+results/
+output/
+out/
+
+# ---- backups ----
+*.bak
+*.bak_*
+*.zip
+*.rar
+*.7z
+*~
+
+# ---- OS / editor ----
+Thumbs.db
+desktop.ini
+.DS_Store
+*.dll
+*.prj

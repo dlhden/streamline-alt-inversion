@@ -1,0 +1,14 @@
+# Normalise line endings across platforms.
+# Store text as LF in the repository and check it out as LF everywhere, so the
+# MATLAB sources and the bundled MRST subtree behave identically on Windows,
+# macOS and Linux.
+* text=auto eol=lf
+
+# Eclipse unformatted result files and MATLAB matrices are binary.
+*.SLNSPEC binary
+*.SLN0*   binary
+*.mat     binary
+*.xlsx    binary
+
+# Keep the licence text untouched.
+LICENSE   -text
