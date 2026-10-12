@@ -1,0 +1,28 @@
+SUMMARY OF RUN CASE1
+free line -- the title above must contain the value of caseName (the streamline run folder)
+free line -- values are water cut (fraction), one column per producer
+NUMBER OF TIMESTEPS = 3
+free line -- only the names row (marker+6) and the data rows (marker+11 onwards) are parsed
+free line -- the names row carries two label tokens before the first well name
+DATE	STEP	P103-34	P65-68	P101-31
+free line -- data rows: token 1 = date, tokens 2-3 = step / cumulative days, token 4+ = water cut
+free line -- 'undef' and -1 are read as 0; a missing observation may be written as 0 / undef / -1
+free line -- the number in the "NUMBER OF TIMESTEPS" line (marker+3) defines how many rows follow
+free line
+01-Jan-1995	1	31	0.0000	0.0000	0.0000
+01-Feb-1995	2	59	0.0000	0.0000	0.0120
+01-Mar-1995	3	90	0.0000	0.0000	0.0350
+SUMMARY OF RUN Observed
+free line -- the observed (field) block: the title must contain 'Observed' (case-insensitive)
+free line -- same layout as the simulated block, same dates, same wells
+NUMBER OF TIMESTEPS = 3
+free line -- the fixed-line-number variant (WLW driver) locates the two blocks with
+free line -- wcut_fixed_cols = [names_sim start_sim end_sim names_obs start_obs end_obs]
+DATE	STEP	P103-34	P65-68	P101-31
+free line -- for the published WLW export these six numbers are 7 / 12 / 310 / 318 / 323 / 621
+free line -- (299 monthly steps per block, block markers at lines 1 and 312)
+free line -- multi-block exports are matched by name: the simulated block must contain caseName
+free line
+01-Jan-1995	1	31	0.0000	0.0000	0.0000
+01-Feb-1995	2	59	0.0000	0.0000	0.0230
+01-Mar-1995	3	90	0.0000	0.0000	0.0610

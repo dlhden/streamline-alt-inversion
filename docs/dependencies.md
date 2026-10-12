@@ -8,13 +8,16 @@
 | **MRST 2024b** (trimmed) | Eclipse grid I/O and grid geometry | bundled in `libs/mrst`, GPL-3.0 |
 | **Intersect** (or any Eclipse-compatible simulator) | generates the streamline (`.SLN*`) and grid (`GRDECL`) files | Schlumberger (commercial) — *not* required to read the code, only to produce the input files |
 
-No other toolbox or third-party dependency is used. Excel access is **not**
-required (earlier revisions read a relative-permeability table from
-`Krw.xlsx`; that code path was unused and has been removed).
+No other toolbox or third-party dependency is used. Microsoft Excel **is**
+required on Windows for one input file: the relative-permeability table
+`Krw.xlsx` is read with `xlsread` (the current algorithm does not consume the
+curve derived from it, but the read is executed at start-up — see
+[`input_data.md`](input_data.md) §6 for the two one-line workarounds).
 
 MATLAB language features used by the drivers: `string`/`""` string literals,
-`datetime`, `contains`, `regexp`, `strsplit`/`split`, `smoothdata`,
-`arrayfun`, `waitbar`, `tanh`. All are base-MATLAB and available since R2020b
+`datetime` (with an explicit `zh_CN` locale in the C2 driver), `contains`,
+`regexp`, `strsplit`/`split`, `smoothdata`, `accumarray`, `arrayfun`, `waitbar`,
+`tanh`, `filesep`. All are base-MATLAB and available since R2020b
 (`smoothdata` since R2017a).
 
 ## 2. MRST
@@ -90,11 +93,18 @@ The workflow assumes the current model is simulated with a streamline-capable
 Eclipse-compatible simulator (Intersect in the published applications) that can
 export:
 
-* `GRDECL` grid/property files (`PERMX`, `PERMY`, `NTG`, `SWAT`, `ACTNUM`, …);
+* `GRDECL` property files — the drivers read `PERMX`, `PERMY`, `PERMZ`, `NTG`,
+  `ACTNUM` from the permeability file and `SWAT`, `NTG`, `ACTNUM` from the
+  saturation file, plus the grid geometry (`SPECGRID`, `COORD`, `ZCORN`);
 * Eclipse **unformatted** streamline files `<case>.SLNSPEC` and
-  `<case>.SLN0001…`, read by MRST's `readEclipseOutputFileUnFmt`;
-* producer water-cut history and the per-well saturation-mismatch series as
-  plain text (see [`input_data.md`](input_data.md)).
+  `<case>.SLN0001…`, read by MRST's `readEclipseOutputFileUnFmt` and reshaped by
+  [`../src/file2Streamline.m`](../src/file2Streamline.m);
+* producer water-cut history and the per-well water-cut mismatch series as plain
+  text (`wcut`, `swat_mismatch`);
+* the relative-permeability table as `Krw.xlsx`.
+
+The export recipes (including the Petrel side) and the exact layouts are in
+[`input_data.md`](input_data.md).
 
 The `GRDECL` readers are simulator-agnostic; only the `.SLN*` reader assumes the
 Eclipse unformatted layout that Intersect writes.
