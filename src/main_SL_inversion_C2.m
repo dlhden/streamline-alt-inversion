@@ -176,6 +176,7 @@ sw_dedup_seg  = false;      % 分段模式是否保留"同井同网格只计一�
 %             被丢弃 -> 修复失效。热点网格仍由 SWAT_cnt + sqrt 归一化 + tanh 软截断控制；
 %             需严格复刻原去重语义时置 sw_dedup_seg = true。
 
+
 % =========================================================================
 % 第一部分：读取网格（渗透率场 + 饱和度场共用同一套网格与 LGR 信息）
 % =========================================================================
@@ -1037,6 +1038,23 @@ else
 end
 fprintf('当前轮次 iter_index=%d，gain=%.4f，max_vary_eff=%.4f\n', iter_index, gain, max_vary_eff);
 
+% ---- 方向自检：Δf_w = f_w^sim - f_w^obs > 0（模拟含水偏高）应降低 Sw，反之升高 ----
+mis_nz = mis_data(mis_data ~= 0);
+if ~isempty(mis_nz)
+    mis_mean = mean(mis_nz);
+    n_up = nnz(SWAT_vary > 0);
+    n_dn = nnz(SWAT_vary < 0);
+    fprintf('失配统计：均值 %+.4f，|均值| %.4f，正值占 %.1f%%；本轮回写 升高 %d 格 / 降低 %d 格\n', ...
+        mis_mean, mean(abs(mis_nz)), 100*mean(mis_nz > 0), n_up, n_dn);
+    if mis_mean > 0 && n_up > 10*max(n_dn,1)
+        warning(['失配均值为正（模拟含水率偏高）但修正以升高 Sw 为主，方向可能相反：' ...
+                 '请检查 wcut 模拟块/实测块是否被对调，或 SLN 方案与模拟块是否同一轮次']);
+    elseif mis_mean < 0 && n_dn > 10*max(n_up,1)
+        warning(['失配均值为负（模拟含水率偏低）但修正以降低 Sw 为主，方向可能相反：' ...
+                 '请检查 wcut 模拟块/实测块是否被对调，或 SLN 方案与模拟块是否同一轮次']);
+    end
+end
+
 % ---- 饱和度更新与输出 ----
 nExtra_sw = numel(SWATnumarray) - gridnum;      % LGR 网格不修正
 if nExtra_sw > 0
@@ -1054,9 +1072,8 @@ fprintf('饱和度计算完成, 最大改变量%.4f，最小改变量%.4f，平�
     max(X_new), min(X_new), mean(X_new(ACTNUM==1)))
 
 grdecl_sw.SWAT = SWATarraynew(:);
-% 「流线经过次数」仅供诊断：默认不写入输出文件的 PORO 字段，避免覆盖孔隙度
 if write_slnmask_to_poro
-    grdecl_sw.PORO = sln_mask(:);
+    grdecl_sw.PORO = sln_mask(:);   % 仅诊断用，默认不写，避免覆盖孔隙度
 end
 grdecl_sw.NTG  = NTG(:);
 
