@@ -1,5 +1,34 @@
 # Changelog
 
+## v1.1.10 — 2026-10-20
+
+**Corrected the description of what `TOF_times` does.** The previous note claimed
+that a value `c` places the boundary of condition (1) of Eq. (13) in the last
+`1/c` fraction of a streamline. That is not the case.
+
+The two conditions bracket the remaining time of flight
+`backTOF = SW_TOF(end) - SW_TOF`, which is scaled by `TOF_times`:
+
+    tau_min - dt_s  <=  backTOF  <=  elaps
+
+so the admissible part of a streamline, measured from the wellbore, is
+
+    f = elaps * 86400 / (TOF_times * T_tot[s])
+
+which depends on the elapsed time and on the total time of flight as well as on
+`TOF_times`. Parsed from the SLN files of the main case (30 snapshots,
+1996-2025, i.e. one frame per year) the median total time of flight is
+9.9e6 s ~ 114 d, hence for `TOF_times = 1500`
+
+    elaps = 365 d -> f = 0.21%,
+    elaps =  30 d -> f = 0.018%,
+
+so only the last one or two nodes before the wellbore are selectable, and the
+value `20000` of the WLW case restricts the segment further. Nothing in the
+numerical results changes: `TOF_times` and the code path are untouched, only the
+documentation is corrected. Drivers, `src/` (rebuilt) and README
+§2/§6/§9 are updated.
+
 ## v1.1.9 — 2026-10-20
 
 **All backtracking times are now compared in days, and the unit of the SLN time

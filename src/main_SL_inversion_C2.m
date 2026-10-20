@@ -143,12 +143,17 @@ sl_years = 6;   % [A] 单帧流线快照的有效期（年），按快照间隔�
 alpha = 1;
 % ============ !!! TOF_times must be calibrated per case (dimensionless) !!! ============
 % TIME_BEG in the SLN file is written in SECONDS of physical time. The code converts it to
-% days and then applies the dimensionless backtracking scale:
+% days and then applies the dimensionless scale factor:
 %     SW_TOF [day] = TOF [s] / 86400 * TOF_times
-% TOF_times is therefore NOT a unit-conversion factor. It stretches the travel-time axis onto
-% the observation window of one reconstruction interval: for a value c, the boundary of
-% condition (1) of Eq. (13) sits in the last 1/c fraction of each streamline, so a larger
-% value places the backtracked cell closer to the wellbore.
+% TOF_times is therefore NOT a unit-conversion factor. It scales the remaining time of flight
+% backTOF = SW_TOF(end) - SW_TOF, which is what the two conditions of Eq. (13) bracket:
+%     tau_min - dt_s  <=  backTOF  <=  elaps
+% The admissible part of a streamline, measured from the wellbore, is therefore
+%     f = elaps * 86400 / (TOF_times * T_tot[s]),
+% NOT 1/c: f also depends on the elapsed time elaps and on the total time of flight T_tot.
+% With yearly snapshots (elaps <= 365 d) and T_tot ~ 1e7 s this gives f <= 0.2% for
+% TOF_times = 1500, i.e. only the last one or two nodes before the wellbore remain
+% selectable; a larger value makes that terminal segment shorter still.
 % The value is case specific and must not be copied (this repository: C2 = 1500, WLW = 20000).
 % A wrong value shifts the whole back-projection window and corrupts both the sign and the
 % magnitude of the saturation update -- check this parameter first when results look wrong.

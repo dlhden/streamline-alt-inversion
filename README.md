@@ -60,7 +60,7 @@ two published cases, *not* transferable defaults.**
 
 | Parameter | Why it cannot be copied | How to set it | Paper |
 | --- | --- | --- | --- |
-| `TOF_times` | the SLN `TIME_BEG` is written in **seconds**; the code converts it to days and then applies a dimensionless backtracking scale, `SW_TOF[day] = TOF[s]/86400 × TOF_times`. It is **not** a unit conversion: a value `c` places the back-projection boundary in the last `1/c` of each streamline, so it stretches the travel-time axis onto the observation window. The two cases here differ by **13×** (1500 vs 20000). A wrong value shifts the whole back-projection window and the saturation update becomes meaningless. | run 1–2 iterations; check that the printed saturation change and the water-cut fit move in the right direction; if not, change the order of magnitude | 1500 (C2) / 20000 (WLW) |
+| `TOF_times` | the SLN `TIME_BEG` is written in **seconds**; the code converts it to days and scales the remaining time of flight, `SW_TOF[day] = TOF[s]/86400 × TOF_times`. It is **not** a unit conversion and **not** a `1/c` window: the two conditions of Eq. (13) bracket `backTOF`, so the admissible part of a streamline, measured from the wellbore, is `f = elaps×86400/(TOF_times×T_tot[s])`, which also depends on the elapsed time and on the total time of flight. With yearly snapshots (`elaps ≤ 365 d`) and `T_tot ≈ 1e7 s`, `f ≤ 0.2%` for 1500, i.e. only the last one or two nodes stay selectable; the two cases here differ by **13×** (1500 vs 20000). A wrong value shifts the whole back-projection window and the saturation update becomes meaningless. | run 1–2 iterations; check that the printed saturation change and the water-cut fit move in the right direction; if not, change the order of magnitude | 1500 (C2) / 20000 (WLW) |
 | `SW_min`, `SW_max` | saturation clip bounds: `SW_min` is the connate water saturation (or the smallest value your model allows), `SW_max` is `1 − S_orw` or the deck's upper limit. `SW_max` above the deck limit gets truncated on the next run. | read them off your `SWOF`/`KRW` table and the deck | 0.01 / 0.999883 |
 | `PERM_min`, `PERM_max` | geological bounds of the multiplier projection; they are the permeability range of *your* field | from the core/log permeability distribution | 0.01 / 800 mD |
 | `miuo`, `miuw` | fluid viscosities used when building `f_w(S_w)` from `Krw.xlsx` | your PVT | 2.8 / 1 mPa·s |
@@ -362,7 +362,7 @@ none of them had to leave its base value to obtain the published results.
 
 | Parameter | Value in the paper | Meaning and how to set it |
 | --- | --- | --- |
-| `TOF_times` | `1500` (C2), `20000` (WLW) | Dimensionless backtracking scale, `SW_TOF[day] = TOF[s]/86400 * TOF_times`; the SLN `TIME_BEG` is already in seconds of physical time. A value `c` puts the back-projection boundary in the last `1/c` of each streamline; the two cases differ by 13×. **If the saturation update looks wrong, suspect this first.** Check after 1–2 iterations: does the printed saturation change and the water-cut fit move in the right direction? If not, change the order of magnitude. |
+| `TOF_times` | `1500` (C2), `20000` (WLW) | Dimensionless scale of the remaining time of flight, `SW_TOF[day] = TOF[s]/86400 * TOF_times`; the SLN `TIME_BEG` is already in seconds of physical time. The admissible part of a streamline is `f = elaps×86400/(TOF_times×T_tot[s])` (not `1/c`), so a larger value restricts the contributing cell to a shorter terminal segment next to the wellbore. The two cases differ by 13×. **If the saturation update looks wrong, suspect this first.** Check after 1–2 iterations: does the printed saturation change and the water-cut fit move in the right direction? If not, change the order of magnitude. |
 | `SW_min`, `SW_max` | `0.01`, `0.999883` | Saturation clip bounds. `SW_min` = connate water saturation (or the smallest saturation your model allows); `SW_max` = `1 − S_orw`, or the deck's upper limit (0.999883 is the deck limit of the main case). `SW_max` above the deck limit is truncated by the simulator on the next run. |
 | `PERM_min`, `PERM_max` | `0.01`, `800` mD | Geological bounds of the projected multiplier. Take the permeability range of your field. |
 | `miuo`, `miuw` | `2.8`, `1` mPa·s | Fluid viscosities used to build `f_w(S_w)` from `Krw.xlsx`. |
@@ -577,7 +577,11 @@ Excel 环境最省事（无 Excel 时把该行换成 `readmatrix` 或注释掉�
 **参数分三类**（完整表见 §8，速查见 §0.2）：
 
 * **[A] 必须按自己的油藏标定，论文值不能照搬**：
-  * `TOF_times`：SLN 的 `TIME_BEG` 以**秒**输出，代码先除以 86400 折成天，再乘这个无量纲回溯尺度，
+  * `TOF_times`：SLN 的 `TIME_BEG` 以**秒**输出，代码先除以 86400 折成天，再乘这个无量纲缩放因子，
+    `SW_TOF[天] = TOF[秒]/86400 × TOF_times`；它不是单位换算，也不是「末 1/c 窗口」：Eq.(13) 两式
+    夹住 `backTOF`，故可满足段自井底数起占流线全长 `f = elaps×86400/(TOF_times×T_tot[秒])`，
+    还取决于已历时间与总飞行时间。快照逐年一帧（`elaps ≤ 365 d`）、`T_tot ≈ 1e7 s` 时，
+    `TOF_times=1500` 给出 `f ≤ 0.2%`，即只剩井壁前 1～2 个节点可选；两案例相差 13 倍（1500 / 20000）。
     `SW_TOF[天] = TOF[秒]/86400 × TOF_times`；它不是单位换算，取值 c 时反投影边界落在每条流线末 1/c 段内。
     取值与模拟器的流线输出单位、观测窗口（重构间隔）有关，两个案例相差 13 倍（1500 / 20000）。
     有关。本仓库两案例分别取 1500（C2）与 20000（WLW），**相差 13 倍**。取错会让反投影
