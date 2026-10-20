@@ -141,26 +141,30 @@ miuo = 2.8;   % [A] 原油粘度 (mPa·s)
 miuw = 1;     % [A] 水粘度 (mPa·s)
 sl_years = 6;   % [A] 单帧流线快照的有效期（年），按快照间隔与资料跨度取
 alpha = 1;
-% ================== !!! TOF_times 必须按案例标定，不能照搬 !!! ==================
-% 流线 TOF 是无量纲量，本代码用 SW_TOF = TOF * TOF_times（近似为「天」）把它换算
-% 成物理时间，用于确定"某时刻之前水线前缘的位置"（反投影时间窗）。该换算倍数与
-% 模拟器的流线时间步长 / 输出单位有关，不同油藏、不同算例都不能套用：
-%   - 本仓库两个案例分别取 1500（C2，370x252x12）与 20000（WLW）；
-%   - 倍数不对时反投影时间窗整体错位，饱和度修正的方向和幅度都会不对 —— 结果
-%     异常时请先检查这个参数。
-% 建议：先试算 1~2 轮，观察运行时打印的"饱和度计算完成，最大改变量…"以及含水率
-%   拟合曲线是否朝正确方向变化，再据此调大 / 调小倍数量级。
-TOF_times = 1500;    % 流线 TOF 无量纲 -> 物理时间换算倍数（SW_TOF = TOF * TOF_times，近似为天）
+% ============ !!! TOF_times must be calibrated per case (dimensionless) !!! ============
+% TIME_BEG in the SLN file is written in SECONDS of physical time. The code converts it to
+% days and then applies the dimensionless backtracking scale:
+%     SW_TOF [day] = TOF [s] / 86400 * TOF_times
+% TOF_times is therefore NOT a unit-conversion factor. It stretches the travel-time axis onto
+% the observation window of one reconstruction interval: for a value c, the boundary of
+% condition (1) of Eq. (13) sits in the last 1/c fraction of each streamline, so a larger
+% value places the backtracked cell closer to the wellbore.
+% The value is case specific and must not be copied (this repository: C2 = 1500, WLW = 20000).
+% A wrong value shifts the whole back-projection window and corrupts both the sign and the
+% magnitude of the saturation update -- check this parameter first when results look wrong.
+TOF_times = 1500;
+TOF_sec_per_day = 86400;   % SLN time unit: seconds per day
 
-% ================= 饱和度上下限必须由用户自行确定 ==========================
-% SW_min / SW_max 是饱和度更新的物理截断边界，取决于你的模型和相渗曲线，
-% 不存在通用取值：
-%   SW_min —— 通常取束缚水饱和度（或模型允许的最小含水饱和度）；
-%   SW_max —— 通常取 1 - S_orw，或模拟器 deck 中的含水饱和度上限
-%              （本案例的 0.999883 即取自 deck 上限）。
-% 注意 SW_max 必须不超过 deck 的上限，否则写出的 SW_iter.GRDECL 会被模拟器
-% 在下次运行时截断。本案例 SW_min = 0.01 相当于不额外约束（初始场各处的含水
-% 饱和度都已高于束缚水）。
+% ================= saturation bounds must be set by the user ==================
+% SW_min / SW_max are the truncation bounds of the saturation update and depend on the
+% model and on the relative-permeability curves; there is no universal value:
+%   SW_min -- normally the connate water saturation (or the smallest saturation the model
+%             accepts); this case uses 0.01, which does not bind in practice.
+%   SW_max -- physically 1. This case uses 0.999883, just below unity only to avoid a
+%             relative-permeability/capillary singularity at Sw = 1 in some simulators;
+%             it is a numerical safeguard, not a physical constraint.
+% SW_max must not exceed the limit of the deck, otherwise the written SW_iter.GRDECL is
+% truncated by the simulator at the next run.
 SW_min = 0.01;
 SW_max = 0.999883;
 
@@ -168,7 +172,7 @@ max_vary = 1;
 decay_times = 3;
 endtime_weight = 3;
 sw_decay    = 0.9;    % 逐轮衰减因子：gain = sw_decay^(iter_index-1)
-mis_tol     = 0.05;   % 井冻结门限：平均|饱和度失配| < mis_tol 的井本轮不修正
+mis_tol     = 0.05;   % 井冻结门限：平均|含水率失配| < mis_tol 的井本轮不修正（失配＝模拟−实测的含水率差）
 dedup_cells = true;   % 恢复同一流线单元的去重（防止同一网格被反复修正）
 normalize_cnt = true; % v2 按 sqrt(计入次数) 归一化热点网格修正量
 soft_clip     = true; % v2 tanh 软截断（false 退回 max/min 硬截断）
@@ -545,7 +549,7 @@ for k = 1:SLNN
        end
        % 饱和度反演附加字段
        m_sln(i,1).END_CELL = m_sln(i,1).GLO_CELL(end);
-       m_sln(i,1).SW_TOF   = m_sln(i,1).TOF * TOF_times;
+       m_sln(i,1).SW_TOF   = m_sln(i,1).TOF / TOF_sec_per_day * TOF_times;   % 单位：天
        endcell_wellid(m_sln(i,1).END_CELL) = m_sln(i,1).END;
        sln_mask(m_sln(i,1).GLO_CELL) = sln_mask(m_sln(i,1).GLO_CELL) + 1;
     end
@@ -939,11 +943,14 @@ for i = 1:size(mis_data,2)
     col_temp_list = [];             % 单点模式去重表（逐井重置，与原代码一致）
     used_seg(:)   = false;          % [修复A] 分段模式去重表（逐井重置）
     jnz = find(mis_data_new(:,i)~=0,1);
+    % 时间单位统一为「天」的标量：SW_TOF 已是天，失配时刻与快照时刻的差也折成天，
+    % 不再用 seconds()/duration 混算（旧版把「天」当「秒」喂给 seconds()，见文件头说明）
+    dt_s = days(mis_datetime{end}-mis_datetime{end-1});   % 末采样间隔（天），作 Eq.(13) 第二式容差
     for j = 1:size(mis_data_new,1)
         t_misdate = mis_datetime{j};
 
         if mis_data_new(j,i)~=0
-            minimum_time = (mis_datetime{j} - mis_datetime{jnz})/decay_times;
+            minimum_time = days(mis_datetime{j} - mis_datetime{jnz})/decay_times;   % 天
 
             s_i = find(t_misdate >= sln_datetime & t_misdate < sln_datetime + years(sl_years));
             if ~isempty(s_i)
@@ -954,7 +961,7 @@ for i = 1:size(mis_data,2)
                     sln_END = sln_endlist{ss_i};
                     linked_sln = sln_t(sln_END == wi);
                     if numel(linked_sln) > 0
-                        elaps = t_misdate - sln_datetime(ss_i);
+                        elaps = days(t_misdate - sln_datetime(ss_i));   % 天
                         b_temp = arrayfun(@(x)x.BEGIN,linked_sln);
                         [~,~,e_temp] = unique(b_temp);
                         c_temp = accumarray(e_temp,1);
@@ -965,8 +972,10 @@ for i = 1:size(mis_data,2)
                             ncell = numel(sln_k.GLO_CELL);
                             backTOF = sln_k.SW_TOF(end) - sln_k.SW_TOF;
                             backTOF = backTOF(2:end);
-                            TOF_sec = seconds(backTOF * 1);
-                            k_i = find(elaps >= TOF_sec & (TOF_sec+(mis_datetime{end}-mis_datetime{end-1})) >= minimum_time,1);
+                            % 取首个同时满足两式的节点（索引自流线起点向井端递增）：
+                            %   (1) backTOF <= elaps                —— 该节点的水已能到达井底
+                            %   (2) backTOF + dt_s >= minimum_time  —— 回溯停留时间下限，dt_s 为采样间隔容差
+                            k_i = find(elaps >= backTOF & (backTOF + dt_s) >= minimum_time, 1);
                             m_time = max(sl_years * 4 / m, 1);
                             dvary  = -mis_data_new(j,i)*alpha*sln_k.PFRACRES/c_temp(k)*m_time;  % 该条流线的总修正量
 

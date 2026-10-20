@@ -1,5 +1,32 @@
 # Changelog
 
+## v1.1.9 — 2026-10-20
+
+**All backtracking times are now compared in days, and the unit of the SLN time
+of flight is stated correctly.** The `TIME_BEG` record of the SLN file is written
+in **seconds** of physical time: parsed directly from `CASE1.SLN0001`, the total
+time of flight has a median of 9.9e6 s (≈ 114 d) and a maximum of 1.2e8 s
+(≈ 3.8 a), which is the order expected for a few-hundred-metre well spacing.
+
+* `SW_TOF` is now built as `TOF / 86400 * TOF_times`, i.e. in **days**;
+  `TOF_sec_per_day = 86400` is added to the configuration block.
+* The cell-selection test of Eq. (13) is rewritten in day scalars:
+  `elaps >= backTOF & backTOF + dt_s >= minimum_time`, with `elaps`,
+  `minimum_time` and the sampling tolerance `dt_s` all converted through `days()`.
+  The previous code fed a day-valued quantity to `seconds()`, which made the two
+  sides of the comparison differ by a factor of 86400.
+* `TOF_times` is **not** a unit conversion and its value is unchanged (1500 for
+  C2, 20000 for WLW). It is a dimensionless backtracking scale: a value `c`
+  places the boundary of the first condition at the last `1/c` of each
+  streamline. Because `seconds(TOF*1500)` and `days(TOF/86400*1500)` denote the
+  same duration, the rewrite reproduces the previous results bit for bit while
+  making the units explicit.
+* `mis_tol` is documented as the mean absolute **water-cut** mismatch (the
+  comment still said "saturation"); `SW_max = 0.999883` is documented as a
+  numerical safeguard only, the physical bound being 1.
+* Drivers, `src/` (rebuilt), README §4/§6 and the Chinese parameter notes are
+  updated accordingly.
+
 ## v1.1.5 — 2026-10-20
 
 **The mismatch file is gone from the code entirely.** `mis_source` and
