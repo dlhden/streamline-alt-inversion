@@ -95,7 +95,10 @@ iter_index  = 1;      % 当前反演轮次（第 1 轮填 1，之后每轮 +1）
 %           [B] 可直接沿用论文值   [C] 沿用后按网格尺度/快照间隔调整
 % --------------------- 渗透率反演参数（v2 算法）-------------------------
 gamma_relax = 1;    % Eq.(39) 松弛因子 gamma，控制修正步长
-gamma_decay = 0.9;    % 逐轮衰减因子：gamma_eff = gamma_relax * gamma_decay^(iter_index-1)
+gamma_decay = 0.9;    % 逐轮衰减因子：gamma_eff = max(gamma_relax * gamma_decay^(iter_index-1), gamma_min)
+gamma_min   = 0;      % 步长下限（<1012 版为 0.5>）；置 0 表示不设下限。
+                      % 与旧版逐位对齐时：gamma_relax=5、gamma_min=0.5（1012 版即此设置），
+                      % 否则同一份数据算出的渗透率乘子会相差约 5 倍。
 fit_tol     = 0.20;   % 井冻结门限：含水率平均相对误差 < fit_tol 的井本轮不修正
 e_bt_tol    = 0.10;   % 见水时间失配死区：|E_bt| < e_bt_tol 的井不做修正
 w_bt        = 0.5;    % v2 见水时间驱动权重 w_bt（含水率水平驱动权重为 1-w_bt）
@@ -545,7 +548,7 @@ end
 % 第五部分：渗透率修正（SPE_0905 论文方法 + v2 组合驱动与临界井加权）
 % =========================================================================
 disp('开始渗透率修正计算')
-gamma_eff = gamma_relax * gamma_decay^(iter_index-1);   % 逐轮衰减的松弛因子
+gamma_eff = max(gamma_relax * gamma_decay^(iter_index-1), gamma_min);   % 逐轮衰减的松弛因子（含下限）
 fprintf('当前轮次 iter_index=%d，gamma_eff=%.4f\n', iter_index, gamma_eff);
 dlnK_num = zeros(gridnum,1);   % Eq.(40) 分子：sum( omega * ln(chi) )
 dlnK_den = zeros(gridnum,1);   % Eq.(40) 分母：sum( omega )

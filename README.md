@@ -416,7 +416,7 @@ against the baseline methods is not favoured by a per-case calibration.
 | Parameter | Paper | Meaning |
 | --- | --- | --- |
 | `iter_index` | `1` | Current outer-iteration index (1 at the first iteration that has a streamline dump). |
-| `gamma_relax`, `gamma_decay` | `1`, `0.9` | Relaxation factor and its geometric decay, `gamma_eff = gamma_relax * gamma_decay^(iter_index-1)`. |
+| `gamma_relax`, `gamma_decay`, `gamma_min` | `1`, `0.9`, `0` | Relaxation factor, its geometric decay and an optional floor: `gamma_eff = max(gamma_relax * gamma_decay^(iter_index-1), gamma_min)`. `gamma_min = 0` means no floor. **Watch this when comparing against an older copy of the code:** the 12-Oct version used `gamma_relax = 5, gamma_min = 0.5`, i.e. a step 5× larger, so the permeability multipliers differ by ~5× with everything else unchanged. |
 | `fit_tol` | `0.20` | Producer freezing tolerance: wells whose mean relative water-cut error is below it are not corrected this iteration. |
 | `swing_hi`, `swing_boost` | `0.40`, `1.5` | Critical band `[fit_tol, swing_hi)` and the step amplification applied inside it. |
 | `e_bt_tol`, `e_wc_tol` | `0.10`, `0.15` | Dead zones of the breakthrough-time and water-cut-level signals. |
