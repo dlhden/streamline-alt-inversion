@@ -439,7 +439,8 @@ obs_has_data = any(valid_observed & data_observed ~= 0, 2);
 while nMisT > 1 && ~obs_has_data(nMisT)
     nMisT = nMisT - 1;
 end
-mis_datetime = mis_datetime_wc(1:nMisT);
+% 下游按元胞逐元素访问（mis_datetime{j} 取单个时刻），故此处转成元胞
+mis_datetime = num2cell(mis_datetime_wc(1:nMisT));
 
 % ---- 逐井逐时刻作差 ----
 mis_data = zeros(nMisT, numel(mis_wellnames));
