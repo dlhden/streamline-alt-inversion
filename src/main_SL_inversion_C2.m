@@ -93,6 +93,15 @@ iter_index  = 1;      % 当前反演轮次（第 1 轮填 1，之后每轮 +1）
 
 % 参数分类：[A] 必须按本油藏标定（论文值属于两个已发表算例，不可照搬）
 %           [B] 可直接沿用论文值   [C] 沿用后按网格尺度/快照间隔调整
+%
+% 若要逐位复现 1012 旧版结果（同一份输入、同一 iter_index），把下面 6 项改成旧值，
+% 其余不必动——失配序列已核对：由 wcut 内部求差与旧版读 swat_mismatch 完全等价
+% （955 口共同井逐格中位差 0，导出文件漏掉的 37 口井 sim≡obs≡0、被冻结，不起作用）：
+%     gamma_relax = 5;  gamma_min = 0.5;        % 旧版步长是现在的 5 倍
+%     sln_expand_nb = 0;                        % 旧版无「冻结快照扩帧」
+%     fix_etot_combine = false;                 % 旧版无「大误差井零修正」两处修复
+%     fix_break_fallback = false;
+%     sw_write_mode = "single";                 % 旧版只写 k_i 单点，不写 k_i→井端分段
 % --------------------- 渗透率反演参数（v2 算法）-------------------------
 gamma_relax = 1;    % Eq.(39) 松弛因子 gamma，控制修正步长
 gamma_decay = 0.9;    % 逐轮衰减因子：gamma_eff = max(gamma_relax * gamma_decay^(iter_index-1), gamma_min)
