@@ -9,14 +9,15 @@ function main_SL_inversion_WLW()
 %
 %   Workflow (one simulator run per outer iteration):
 %       run N  (Intersect, with streamline output)
-%         -> this driver  (reads streamlines + wcut + [swat_mismatch])
+%         -> this driver  (reads streamlines + wcut; the water-cut mismatch is
+%                          built internally from the two wcut blocks)
 %         -> PERM_iter.GRDECL / SW_iter.GRDECL
 %         -> run N+1 (Intersect) ...   and set iter_index = N+1
 %
 % 中文说明
 % -------------------------------------------------------------------------
 % 合并版：渗透率反演 + 含水饱和度反演（一次运行，同时输出两套修正）。
-% 同一轮模拟结果（流线 + wcut，以及可选的 swat_mismatch）同时驱动两类修正，
+% 同一轮模拟结果（流线 + wcut）同时驱动两类修正，
 % 每轮只需一次 Intersect；两类修正共用 iter_index 轮次计数，各自保留独立衰减
 % 因子 gamma_decay（渗透率）与 sw_decay（饱和度）。
 %
@@ -32,18 +33,15 @@ function main_SL_inversion_WLW()
 % 用法：第 1 轮 iter_index = 1，之后每轮 +1。输出路径与输入相同时会自动
 %   备份输入文件为 <name>.bak_时间戳。
 %
-% 需要准备的数据（第 1、2、5 项一次性；第 3、4 项每轮；第 6 项可选）
+% 需要准备的数据（第 1、2、5 项一次性；第 3、4 项每轮）
 % -------------------------------------------------------------------------
 %   1) PERM_iter.GRDECL   当前渗透率场（PERMX/PERMY/PERMZ/NTG + 网格几何），Petrel 导出，仅第 0 轮
 %   2) SW_iter.GRDECL     当前初始含水饱和度场（SWAT/NTG），建模初始条件产出，仅第 0 轮
 %   3) <caseName>.SLNSPEC + .SLN0001 ...   本轮模拟的流线（模拟器打开流线输出），每轮
-%   4) wcut               模拟块（与本轮算例同名）+ 实测块（含 Observed），每轮
+%   4) wcut               模拟块（与本轮算例同名）+ 实测块（含 Observed），每轮；
+%                         失配 Δf_w = f_w^sim - f_w^obs 由这两块内部求差，无需另导
 %   5) Krw.xlsx           Sw/krw/kro 相渗表；必须存在（驱动会读），当前仅用于生成
 %                         fw 曲线供诊断，修正量本身不依赖它
-%   6) swat_mismatch      **默认不需要**。其内容就是第 4 项两块之差（实测 Pearson
-%                         0.981、中位绝对差 4e-4），默认 mis_source="internal" 由
-%                         wcut 内部生成；只有置 mis_source="file"（复现论文口径）
-%                         时才读取本文件。文件名为历史误称：它装的是含水率失配。
 %
 % 参数分三类（完整说明见 README §8）
 % -------------------------------------------------------------------------
@@ -59,7 +57,6 @@ function main_SL_inversion_WLW()
 %       beta_weight=0.5, eps_tau=1e-3, eps_f=1e-4, eps_df=0.01,
 %       jump_back/jump_fwd=1, chi_min/chi_max=0.5/2.0, sw_front_min=0.05,
 %       alpha=1, max_vary=1, decay_times=3, sw_decay=0.9, mis_tol=0.05,
-%       mis_source/mis_drop_last,
 %       dedup_cells/normalize_cnt/soft_clip=true,
 %       sw_write_mode="segment", sw_seg_weight="end_boost", sw_dedup_seg=false
 % [C] 可沿用，但网格尺度或快照间隔差得多时须按比例改：
@@ -75,19 +72,11 @@ PERM_outpath = fullfile(caseRoot,"PERM_iter.GRDECL");   % 输出：更新后渗�
 SW_path      = fullfile(caseRoot,"SW_iter.GRDECL");     % 输入：当前饱和度场
 SW_writepath = fullfile(caseRoot,"SW_iter.GRDECL");     % 输出：更新后饱和度场
 SLN_headpath = fullfile(caseRoot,"model.sim",caseName); % 输入：本轮流线目录（<caseName>.SLNSPEC / .SLN0001 ...）
-wcut_readpath= fullfile(caseRoot,"wcut");               % 输入：含水率文件（渗透率反演用）
-mis_readpath = fullfile(caseRoot,"swat_mismatch");      % 输入：饱和度失配文件（仅 mis_source="file" 时读取）
+wcut_readpath= fullfile(caseRoot,"wcut");               % 输入：含水率文件（模拟块 + 实测块）
 krw_readpath = fullfile(caseRoot,"Krw.xlsx");           % 输入：相渗曲线（饱和度反演用）
 
-% 饱和度失配的来源
-%   "internal" —— 由 wcut 的「模拟块 - 实测块」内部求差（默认，无需该项导出）
-%   "file"     —— 读上面的 mis_readpath（Petrel 目标函数导出，论文算例口径）
-% 依据：swat_mismatch 文件的实际内容就是 Δf_w = f_w^sim - f_w^obs（实测 Pearson
-%   0.981、中位绝对差 4e-4），所以完全可以内部算；internal 的井集是两块的交集，
-%   通常比手工导出更全（本案例 992 vs 926 口）。文件名为历史误称——它装的是
-%   含水率失配，不是饱和度失配。
-mis_source    = "internal";
-mis_drop_last = true;   % internal 时丢弃最后 1 个时刻，复刻 Petrel 导出的步数
+% 含水率失配 Δf_w = f_w^sim - f_w^obs 由 wcut 的模拟块与实测块内部求差生成，
+% 见第三部分；不需要任何单独的失配数据文件。
 
 % 调试开关：把「流线经过次数」写入输出 GRDECL 的 PORO 字段。
 % 默认 false —— 置 true 会用流线计数覆盖模型孔隙度，仅供诊断，不要用于正式模拟。
@@ -417,75 +406,56 @@ for i = 1:size(data_observed,2)
 end
 
 % =========================================================================
-% 第三部分：饱和度失配时间序列（swat_mismatch，饱和度反演用）
-%   mis_source = "file"     ：读 Petrel 目标函数导出（历史做法，论文算例口径）
-%   mis_source = "internal" ：由 wcut 的模拟块与实测块直接求差，无需外部导出
-% 依据：对长2 实测数据逐井逐时刻配对核对，swat_mismatch 文件内容即
-%       Δf_w = f_w^sim - f_w^obs（Pearson 0.981，中位绝对差 4e-4，差异仅来自
-%       Petrel 输出的有效位截断）。文件名为历史误称——它装的是含水率失配，
-%       不是饱和度失配；同时也满足 Δf_w + f_w^obs <= 1（零违反），
-%       排除了"由分流量曲线反解饱和度再作差"的可能。WLW 沿用同一约定。
+% 第三部分：含水率失配时间序列（由 wcut 两块内部生成，饱和度反演用）
+%   Δf_w(k,j) = f_w^sim(k,j) - f_w^obs(k,j)
+%   即同一口井、同一报告日期的模拟含水率减实测含水率；正值表示模型见水偏早，
+%   饱和度修正方向相应为调低。两块任一时刻缺测（undef）则不计入该格（记 0，
+%   下游按"0 = 不参与"处理）。
+% 井的对应：以模拟块井序为主，按井名在实测块中查找；两块井集与井序都可能不同，
+%   故必须回查原始列号（cidx），不能直接用压缩后的下标。
+% 时间轴：末端的"整块无实测数据"时刻（全部 undef 或全部为 0）说明该时刻实测
+%   尚未录入，直接作差会把 Δf = f^sim 当成失配，故自末尾向前剔除。
 % =========================================================================
-if mis_source == "internal"
-    disp('由 wcut 两块内部构造饱和度失配（不读外部文件）')
+disp('由 wcut 模拟块与实测块构造含水率失配')
 
-    % 井名：以模拟块为主序，仅保留实测块中同时存在的井
-    miswid_obs = zeros(1, numel(raw_w_c));
-    for i = 1:numel(raw_w_c)
-        wi = find(strcmp(raw_w_o, raw_w_c{i}), 1);
-        if ~isempty(wi), miswid_obs(i) = wi; end
-    end
-    keep  = miswid_obs > 0;
-    cidx  = find(keep);               % 保留井在模拟块中的原始列号
-    mis_wellnames = raw_w_c(cidx);
-    miswid_obs    = miswid_obs(cidx);
+% ---- 井名对应：模拟块为主序，仅保留实测块中同时存在的井 ----
+miswid_obs = zeros(1, numel(raw_w_c));
+for i = 1:numel(raw_w_c)
+    wi = find(strcmp(raw_w_o, raw_w_c{i}), 1);
+    if ~isempty(wi), miswid_obs(i) = wi; end
+end
+keep  = miswid_obs > 0;
+cidx  = find(keep);               % 保留井在模拟块中的原始列号
+mis_wellnames = raw_w_c(cidx);
+miswid_obs    = miswid_obs(cidx);
 
-    % 时间轴：两块日期须一致；默认丢弃最后 1 个时刻以复刻 Petrel 导出的步数
-    nChk = min(numel(mis_datetime_wc), numel(mis_datetime_wo));
-    if nChk > 0 && any(mis_datetime_wc(1:nChk) ~= mis_datetime_wo(1:nChk))
-        warning('wcut 模拟块与实测块的时间轴不一致，按行号对齐可能错位');
-    end
-    nMisT = min(size(data_case,1), size(data_observed,1));
-    if mis_drop_last, nMisT = nMisT - 1; end
-    nMisT = max(nMisT, 1);
-    mis_datetime = mis_datetime_wc(1:nMisT);
+% ---- 时间轴：两块长度取交集，剔除末端无实测数据的时刻 ----
+nChk = min(numel(mis_datetime_wc), numel(mis_datetime_wo));
+if nChk > 0 && any(mis_datetime_wc(1:nChk) ~= mis_datetime_wo(1:nChk))
+    warning('wcut 模拟块与实测块的时间轴不一致，按行号对齐可能错位');
+end
+nMisT  = max(min(size(data_case,1), size(data_observed,1)), 1);
+obs_has_data = any(valid_observed & data_observed ~= 0, 2);
+while nMisT > 1 && ~obs_has_data(nMisT)
+    nMisT = nMisT - 1;
+end
+mis_datetime = mis_datetime_wc(1:nMisT);
 
-    % 逐井逐时刻作差；任一侧缺测则该时刻不计入（等价于外部文件里的 undef->0）
-    % 注意：两块的井序不同、井集也不等，必须用 cidx(j) 回查模拟块原始列
-    mis_data = zeros(nMisT, numel(mis_wellnames));
-    for j = 1:numel(mis_wellnames)
-        jc = cidx(j);
-        io = miswid_obs(j);
-        for k = 1:nMisT
-            if valid_case(k,jc) && valid_observed(k,io)
-                mis_data(k,j) = data_case(k,jc) - data_observed(k,io);
-            end
+% ---- 逐井逐时刻作差 ----
+mis_data = zeros(nMisT, numel(mis_wellnames));
+for j = 1:numel(mis_wellnames)
+    jc = cidx(j);
+    io = miswid_obs(j);
+    for k = 1:nMisT
+        if valid_case(k,jc) && valid_observed(k,io)
+            mis_data(k,j) = data_case(k,jc) - data_observed(k,io);
         end
     end
-    mis_data(~isfinite(mis_data)) = 0;
-    fprintf('内部失配：%d 口井（模拟 %d ∩ 实测 %d，丢弃 %d 口无实测井），%d 个时刻\n', ...
-        numel(mis_wellnames), numel(raw_w_c), numel(raw_w_o), ...
-        numel(raw_w_c) - numel(mis_wellnames), nMisT);
-else
-    if ~isfile(mis_readpath)
-        error(['mis_source="file" 但找不到 %s。' ...
-               '改 mis_source="internal" 可由 wcut 两块内部生成，无需该文件。'], mis_readpath);
-    end
-    disp('读取饱和度失配数据矩阵')
-    mislist_sw = readtxtfile(mis_readpath);
-
-    mis_wellnames = split(strtrim(mislist_sw{7}))';
-    mis_wellnames = mis_wellnames(3:end);
-    mis_datetime = {};
-    mis_data = zeros(0,numel(mis_wellnames));
-    for i = 12:numel(mislist_sw)-1
-        tempt = split(strtrim(mislist_sw{i}));
-        tempt(strcmp(tempt,'undef')) = {'0'};
-        mis_datetime{end+1} = datetime(tempt{1});
-        mis_data(end+1,:) = str2double(tempt(4:end));
-    end
-    mis_data(mis_data==-1) = 0;
 end
+mis_data(~isfinite(mis_data)) = 0;
+fprintf('含水率失配：%d 口井（模拟 %d ∩ 实测 %d，丢弃 %d 口无实测井），%d 个时刻\n', ...
+    numel(mis_wellnames), numel(raw_w_c), numel(raw_w_o), ...
+    numel(raw_w_c) - numel(mis_wellnames), nMisT);
 
 % =========================================================================
 % 第四部分：读取流线（只读一次，两套反演共用）

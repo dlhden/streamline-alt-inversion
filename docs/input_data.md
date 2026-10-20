@@ -21,13 +21,16 @@ simulator that can write Eclipse-style GRDECL grids and Eclipse **unformatted**
 | 2 | current initial water saturation | `SW_iter.GRDECL` | `caseRoot` | Petrel property export (§2) |
 | 3 | streamlines of the current run | `<caseName>.SLNSPEC`, `<caseName>.SLN0001 …` | `caseRoot/model.sim/<caseName>/` | the **simulator** (§3) |
 | 4 | water-cut histories (simulated + observed) | `wcut` | `caseRoot` | simulator well history + field production data (§4) |
-| 5 | water-cut mismatch series | `swat_mismatch` | `caseRoot` | simulated − observed water cut, per well/date (§5); **optional** — the default `mis_source="internal"` builds it from item 4 |
-| 6 | relative-permeability table | `Krw.xlsx` | `caseRoot` | core / SCAL data (§6) |
+| 5 | relative-permeability table | `Krw.xlsx` | `caseRoot` | core / SCAL data (§5) |
 
 `caseRoot` and `caseName` are the two lines you set in the driver's
 configuration block. Items 1, 2 and 3 must all describe the **same** run/state:
 iteration `N` reads the fields used by run `N` and the streamlines written by
 run `N`.
+
+There is no sixth item: the water-cut mismatch that drives the saturation update
+is not an input at all — the driver subtracts the observed block of `wcut` from
+the simulated block (§4.4).
 
 ---
 
@@ -184,58 +187,30 @@ line" rows are ignored, the numbered rows are the ones that matter).
 * Concatenate the two exports into one file named `wcut` (no extension) in
   `caseRoot`.
 
-## 5. Water-cut mismatch series — `swat_mismatch` (optional)
+### 4.4 The mismatch is built from these two blocks
 
-This is the series the **saturation inversion** back-projects: for every
-producer and every reporting date, the signed difference
+Nothing else has to be exported. The saturation update is driven by
 
 ```
-mismatch = f_w^sim − f_w^obs          (simulated minus observed water cut, fraction)
+Δf_w(k, j) = f_w^sim(k, j) − f_w^obs(k, j)        (simulated − observed water cut)
 ```
 
-Positive therefore means *the model waters out too early*: the reconstructed
-initial saturation has to come down. Do not flip the sign — it decides whether
-the update goes the right way.
+which the driver forms itself, well by well and date by date, and keeps in
+memory. Three rules it follows:
 
-A value of `0` means *not used* — the driver skips zeros, so this is also how you
-mark shut-in periods or missing observations (`undef` and `-1` are read as 0 as
-well).
+* **Wells are matched by name.** The two blocks need not contain the same wells
+  in the same order — in the main case the simulated block has 1005 wells and the
+  observed one 993 (992 shared). The driver reads the simulated block by its
+  original column index, so no well is silently paired with its neighbour.
+* **A cell with `undef` on either side is dropped** (stored as 0, which the
+  update skips), so missing observations never enter as a spurious mismatch.
+* **Trailing dates with no observed data are stripped.** If the last reporting
+  date of the observed block is a placeholder (all `undef`, or all zero while the
+  previous date is not), differencing it would turn `f_w^sim` into the mismatch;
+  the driver therefore walks back from the end and drops such dates. In the main
+  case that leaves 350 of the 351 reporting dates.
 
-**You do not have to build this file.** It is exactly the difference of the two
-blocks inside `wcut` (§4), which you already export. The default is
-`mis_source = "internal"`: the driver computes the series internally, using the
-per-cell `undef` mask on both sides, and never opens this file. Only
-`mis_source = "file"` reads it — that is how the published results were
-produced, and in that mode a missing file stops the run with an explicit error.
-
-### 5.1 Layout
-
-| Line | Content |
-| --- | --- |
-| 4 | number of reporting steps (first integer on the line; the C2 driver reads it, the WLW driver uses every line up to the last one) |
-| 7 | well names; the **first two tokens are labels**, names start at token 3 |
-| 12 … | one line per step: `date`, `step`, `cumulative days`, then one mismatch value per well |
-
-The wells and dates should match the `wcut` file of the same run (the driver
-maps observed → simulated → streamline well names). Skeleton:
-[`../examples/swat_mismatch_template.txt`](../examples/swat_mismatch_template.txt).
-
-### 5.2 Producing the file (only if you switch to `mis_source="file"`)
-
-For every producer and every reporting date, subtract the observed water cut of
-that date from the simulated water cut of the current run (the same source as the
-simulated block of `wcut`), and write the result in the layout above. A
-small script (MATLAB, Python, Excel) is normally used; the sign convention above
-must be kept — it decides whether the reconstructed initial saturation is
-increased or decreased.
-
-Note that the file name is historical: it holds a **water-cut** mismatch, not a
-saturation mismatch (the Petrel objective-function export names the column
-`HM_WCT`, unit `sm3/sm3`). We confirmed this on the main case: the file matches
-`f_w^sim − f_w^obs` from `wcut` with Pearson 0.981 and median absolute difference
-4×10⁻⁴, and all 155,560 paired cells satisfy `Δf_w + f_w^obs ≤ 1`.
-
-## 6. Relative-permeability table — `Krw.xlsx`
+## 5. Relative-permeability table — `Krw.xlsx`
 
 An Excel workbook with **three columns**:
 
@@ -257,7 +232,7 @@ and `miuw` of the configuration block.
 
 ---
 
-## 7. What the drivers write
+## 6. What the drivers write
 
 | File | Content |
 | --- | --- |
@@ -279,16 +254,17 @@ the update.
 
 ---
 
-## 8. Sanity checklist before the first run
+## 7. Sanity checklist before the first run
 
 1. `SPECGRID` in `PERM_iter.GRDECL` and `SW_iter.GRDECL` describe the same grid,
    and the cell count matches `numel(PERMX) == numel(SWAT)`.
 2. The number of `.SLN####` files is ≥ 2 and their dates overlap the production
    history.
 3. The simulated block of `wcut` carries the same name as the streamline folder
-   (`caseName`), and the well names match those in `SLNSPEC` / `swat_mismatch`.
-4. `wcut` and `swat_mismatch` have the same wells and (approximately) the same
-   dates.
+   (`caseName`), and its well names match those in `SLNSPEC`.
+4. The observed block of `wcut` covers the same wells and (approximately) the
+   same dates as the simulated block; the shared wells are what enters the
+   inversion.
 5. `TOF_times`, `SW_min`, `SW_max` are set for **your** case (README §0).
 6. The driver prints, at start-up, which `wcut` blocks it used and how many
    streamlines it read — check those two lines first whenever the update looks

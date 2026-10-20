@@ -99,8 +99,9 @@ export:
 * Eclipse **unformatted** streamline files `<case>.SLNSPEC` and
   `<case>.SLN0001…`, read by MRST's `readEclipseOutputFileUnFmt` and reshaped by
   [`../src/file2Streamline.m`](../src/file2Streamline.m);
-* producer water-cut history and the per-well water-cut mismatch series as plain
-  text (`wcut`, `swat_mismatch`);
+* producer water-cut history as plain text (`wcut`, with the simulated and the
+  observed block in one file — the mismatch is their difference, computed by the
+  driver);
 * the relative-permeability table as `Krw.xlsx`.
 
 The export recipes (including the Petrel side) and the exact layouts are in

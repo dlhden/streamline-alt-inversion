@@ -1,5 +1,24 @@
 # Changelog
 
+## v1.1.5 — 2026-10-20
+
+**The mismatch file is gone from the code entirely.** `mis_source` and
+`mis_drop_last` are removed, along with the code path that read the separate
+mismatch export, the `mis_readpath` setting, the template and every mention in
+the drivers, README and `docs/`.
+
+* The driver now always builds `Δf_w = f_w^sim − f_w^obs` from the two blocks of
+  `wcut`; Part 3 has no branches and no file I/O.
+* The step count is decided from the data instead of a switch: trailing
+  reporting dates whose observed row is empty (all `undef`, or all zero while the
+  previous date is not) are stripped, because differencing them would turn
+  `f_w^sim` into the mismatch. Main case: 351 dates → 350.
+* Well matching by name plus an explicit original-column index is kept, and the
+  start-up line now reports how many simulated wells have no observation.
+* Documentation: input checklist is **five items**; the mismatch is described in
+  README §5.4 (new "How the mismatch is built from these two blocks") and
+  `docs/input_data.md` §4.4; `examples/swat_mismatch_template.txt` deleted.
+
 ## v1.1.4 — 2026-10-20
 
 **`mis_source` now defaults to `"internal"`: the driver no longer reads
