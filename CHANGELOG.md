@@ -1,5 +1,22 @@
 # Changelog
 
+## v1.1.3 — 2026-10-20
+
+**Bug fix in the internal mismatch mode: wrong column when the two `wcut` blocks
+have different well sets.**
+
+* `data_case` and `valid_case` were indexed with the *compacted* well index
+  instead of the original column of the simulated block. In the main case the
+  simulated block holds 1005 wells and the observed one 993, in a different
+  order; 13 wells are dropped by the intersection, so every column after the
+  first drop was reading another well's simulation history.
+* Fixed by keeping `cidx = find(keep)` and reading `data_case(k,cidx(j))`.
+  Re-verified against the export: 992 wells, Pearson 0.981, median absolute
+  difference 4×10⁻⁴ (unchanged, because the earlier spot-check matched wells by
+  name, not by column).
+* The start-up message now prints how many simulated wells were discarded for
+  lack of an observation, which makes this class of mismatch visible.
+
 ## v1.1.2 — 2026-10-20
 
 **`swat_mismatch` can now be computed from `wcut` — and the file was named wrong.**
@@ -38,15 +55,14 @@ Behaviour of the internal mode (main case)
 
 | | `"file"` | `"internal"` |
 | --- | --- | --- |
-| wells entering the saturation branch | 927 | 993 (intersection of the two blocks) |
-| wells frozen by `mis_tol = 0.05` | 2 | 40 |
+| wells entering the saturation branch | 926 | 992 (intersection of the two blocks) |
+| wells frozen by `mis_tol = 0.05` | 0 | 37 |
 | paired cells vs. the file mode | — | Pearson 0.981, median abs. diff 4×10⁻⁴ |
 
-The 38 extra frozen wells all come from the 66 wells the manual export had
-dropped; on the 927 shared wells the two modes freeze 2 and 3 wells
-respectively. The internal mode is therefore the better default for a new
-reservoir, but the `"file"` mode is kept as default because it is what produced
-the published numbers.
+All 37 frozen wells are among the 66 wells the manual export had dropped; on the
+926 shared wells the two modes freeze none. The internal mode is therefore the
+better default for a new reservoir, but the `"file"` mode is kept as default
+because it is what produced the published numbers.
 
 Documentation
 

@@ -313,7 +313,7 @@ export the manuscript used.
 
 Keep `mis_source = "file"` (the default) if you want to reproduce the paper
 numbers: the internal mode uses the full intersection of the two `wcut` blocks
-and therefore *more* wells (993 vs 927 in the main case — the 66 extra wells are
+and therefore *more* wells (992 vs 926 in the main case — the 66 extra wells are
 mostly low-mismatch ones, 37 of which fall below `mis_tol` and get frozen), so
 it is not bit-identical.
 
