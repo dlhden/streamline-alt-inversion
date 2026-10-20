@@ -1,5 +1,60 @@
 # Changelog
 
+## v1.1.2 — 2026-10-20
+
+**`swat_mismatch` can now be computed from `wcut` — and the file was named wrong.**
+
+Source changes
+
+* New switch **`mis_source`** (`"file"` by default, `"internal"` optional). In
+  `"internal"` mode the driver builds the saturation-inversion input directly
+  from the simulated and observed blocks of `wcut`, so the `swat_mismatch`
+  export is no longer part of the workflow. `mis_drop_last` (default `true`)
+  drops the last reporting date so the step count matches the historical export.
+  The `"file"` branch is unchanged line for line, so the default behaviour is
+  byte-identical to v1.1.1.
+* The two `wcut` blocks now also carry a **per-cell validity mask** (`undef` on
+  either side), so the internal mode reproduces the "skip missing observations"
+  rule of the file mode instead of turning `undef` into a spurious mismatch.
+
+What the file actually contains
+
+* We checked `swat_mismatch` against the two `wcut` blocks of the same run, well
+  by well and date by date: it **is** `Δf_w = f_w^sim − f_w^obs`
+  (Pearson 0.981, median absolute difference 4×10⁻⁴, the residual being the
+  truncation of the exported digits). It is a Petrel objective-function export
+  (`HM_WCT`, unit `sm3/sm3`).
+* Independent confirmation that it is *not* a saturation difference: all
+  155,560 paired cells satisfy `Δf_w + f_w^obs ≤ 1`, impossible for
+  `ΔS_w = S_w^sim − S_w^obs` (which would reach `1 − S_wc` at most and is not
+  bounded by the observed water cut).
+* Consequence for the documentation: every place that described the file as
+  "observed − simulated" had the sign **wrong**. Corrected to "simulated −
+  observed" in README §0.1/§5.5/§15, `docs/input_data.md` §5 and the template.
+  This matters — with the old wording a self-made file would have flipped the
+  direction of the saturation update.
+
+Behaviour of the internal mode (main case)
+
+| | `"file"` | `"internal"` |
+| --- | --- | --- |
+| wells entering the saturation branch | 927 | 993 (intersection of the two blocks) |
+| wells frozen by `mis_tol = 0.05` | 2 | 40 |
+| paired cells vs. the file mode | — | Pearson 0.981, median abs. diff 4×10⁻⁴ |
+
+The 38 extra frozen wells all come from the 66 wells the manual export had
+dropped; on the 927 shared wells the two modes freeze 2 and 3 wells
+respectively. The internal mode is therefore the better default for a new
+reservoir, but the `"file"` mode is kept as default because it is what produced
+the published numbers.
+
+Documentation
+
+* README §0.1: the data checklist is now **five mandatory items plus one
+  optional**; §0.2/§0.3 and the driver headers updated accordingly.
+* README §5.5 and `docs/input_data.md` §5: how to switch, what the switch
+  changes, and why the sign convention is not negotiable.
+
 ## v1.1.1 — 2026-10-20
 
 **Parameter documentation, and one value that did not match the manuscript.**

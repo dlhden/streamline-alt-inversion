@@ -21,7 +21,7 @@ simulator that can write Eclipse-style GRDECL grids and Eclipse **unformatted**
 | 2 | current initial water saturation | `SW_iter.GRDECL` | `caseRoot` | Petrel property export (§2) |
 | 3 | streamlines of the current run | `<caseName>.SLNSPEC`, `<caseName>.SLN0001 …` | `caseRoot/model.sim/<caseName>/` | the **simulator** (§3) |
 | 4 | water-cut histories (simulated + observed) | `wcut` | `caseRoot` | simulator well history + field production data (§4) |
-| 5 | water-cut mismatch series | `swat_mismatch` | `caseRoot` | observed − simulated water cut, per well/date (§5) |
+| 5 | water-cut mismatch series | `swat_mismatch` | `caseRoot` | simulated − observed water cut, per well/date (§5); optional — `mis_source="internal"` builds it from item 4 |
 | 6 | relative-permeability table | `Krw.xlsx` | `caseRoot` | core / SCAL data (§6) |
 
 `caseRoot` and `caseName` are the two lines you set in the driver's
@@ -184,18 +184,29 @@ line" rows are ignored, the numbered rows are the ones that matter).
 * Concatenate the two exports into one file named `wcut` (no extension) in
   `caseRoot`.
 
-## 5. Water-cut mismatch series — `swat_mismatch`
+## 5. Water-cut mismatch series — `swat_mismatch` (optional)
 
 This is the series the **saturation inversion** back-projects: for every
 producer and every reporting date, the signed difference
 
 ```
-mismatch = f_w^obs − f_w^sim          (observed minus simulated water cut, fraction)
+mismatch = f_w^sim − f_w^obs          (simulated minus observed water cut, fraction)
 ```
+
+Positive therefore means *the model waters out too early*: the reconstructed
+initial saturation has to come down. Do not flip the sign — it decides whether
+the update goes the right way.
 
 A value of `0` means *not used* — the driver skips zeros, so this is also how you
 mark shut-in periods or missing observations (`undef` and `-1` are read as 0 as
 well).
+
+**You do not have to build this file.** It is exactly the difference of the two
+blocks inside `wcut` (§4), which you already export. Set `mis_source =
+"internal"` in the configuration block and the driver computes it internally,
+using the per-cell `undef` mask on both sides. The default
+`mis_source = "file"` keeps reading this file, which is how the published
+results were produced.
 
 ### 5.1 Layout
 
@@ -209,14 +220,20 @@ The wells and dates should match the `wcut` file of the same run (the driver
 maps observed → simulated → streamline well names). Skeleton:
 [`../examples/swat_mismatch_template.txt`](../examples/swat_mismatch_template.txt).
 
-### 5.2 Producing the file
+### 5.2 Producing the file (only if you keep `mis_source="file"`)
 
-For every producer and every reporting date, subtract the simulated water cut of
-the current run (the same source as the simulated block of `wcut`) from the
-observed water cut of that date, and write the result in the layout above. A
+For every producer and every reporting date, subtract the observed water cut of
+that date from the simulated water cut of the current run (the same source as the
+simulated block of `wcut`), and write the result in the layout above. A
 small script (MATLAB, Python, Excel) is normally used; the sign convention above
 must be kept — it decides whether the reconstructed initial saturation is
 increased or decreased.
+
+Note that the file name is historical: it holds a **water-cut** mismatch, not a
+saturation mismatch (the Petrel objective-function export names the column
+`HM_WCT`, unit `sm3/sm3`). We confirmed this on the main case: the file matches
+`f_w^sim − f_w^obs` from `wcut` with Pearson 0.981 and median absolute difference
+4×10⁻⁴, and all 155,560 paired cells satisfy `Δf_w + f_w^obs ≤ 1`.
 
 ## 6. Relative-permeability table — `Krw.xlsx`
 

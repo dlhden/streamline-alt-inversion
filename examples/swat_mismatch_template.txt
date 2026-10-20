@@ -1,5 +1,7 @@
 free line -- mismatch series used by the saturation inversion:
-free line -- value = observed minus simulated water cut, one column per well, per reporting date
+free line -- value = simulated minus observed water cut, one column per well, per reporting date
+free line -- (positive = the model waters out too early; do NOT flip the sign)
+free line -- optional: mis_source="internal" builds this file from the two wcut blocks
 free line -- zero means "not used" (the driver skips zeros); undef and -1 are read as 0
 NUMBER OF TIMESTEPS = 3
 free line -- only the names row (line 7) and the data rows (line 12 onwards) are parsed

@@ -23,7 +23,7 @@ files) a streamline-capable simulator.
 
 ## 0. Read this first
 
-Three things are needed before the first run: **(0.1) six input data items**,
+Three things are needed before the first run: **(0.1) the input data items**,
 **(0.2) a short list of parameters you must calibrate on your own reservoir**
 (the rest can be copied from the paper), and **(0.3) the iteration procedure**.
 Sections 5–8 give the details; this section is the checklist.
@@ -31,7 +31,8 @@ Sections 5–8 give the details; this section is the checklist.
 ### 0.1 What data you need
 
 Everything lives in the folder `caseRoot`, except the streamlines, which live in
-`caseRoot/model.sim/<caseName>/`. Six items, of which **only two are static**:
+`caseRoot/model.sim/<caseName>/`. Five mandatory items plus one optional, of
+which **only two are static**:
 
 | # | Item | File | Produced from | Redone every iteration? |
 | --- | --- | --- | --- | --- |
@@ -39,10 +40,27 @@ Everything lives in the folder `caseRoot`, except the streamlines, which live in
 | 2 | current initial water saturation | `SW_iter.GRDECL` (`SWAT`, `NTG`) | the model's initial-condition workflow (J-function, S-height, …) (§5.2) | **No** — export once; afterwards the driver writes it |
 | 3 | streamlines of the current run | `model.sim/<caseName>/<caseName>.SLNSPEC` + `.SLN0001 …` | **the simulator**, with streamline output switched on (§5.3) | **Yes** — one dump per simulation |
 | 4 | water-cut histories | `wcut` | simulated block: the run's well water-cut table; observed block: field production history (§5.4) | **Yes** — the simulated block |
-| 5 | water-cut mismatch series | `swat_mismatch` | observed − simulated water cut, per well per reporting date (§5.5); can be generated from the same two tables as item 4 | **Yes** |
-| 6 | relative-permeability table | `Krw.xlsx` (`Sw`, `krw`, `kro`) | core / SCAL data (§5.6) | No (read at start-up only; not consumed by the current update) |
+| 5 | relative-permeability table | `Krw.xlsx` (`Sw`, `krw`, `kro`) | core / SCAL data (§5.6) | No (must exist — the driver reads it — but it only builds `f_w(S_w)` for diagnostics; the update itself does not consume it) |
+| 6 *(optional)* | water-cut mismatch series | `swat_mismatch` | simulated − observed water cut, per well per reporting date (§5.5). **Only read when `mis_source="file"`; set `mis_source="internal"` and it is computed from item 4** | Yes (only in `"file"` mode) |
 
-No field data are distributed with this repository, and no item 3–5 can be
+**Item 6 can be deleted from your workflow.** We checked the file against the
+water-cut tables of the same run, well by well and date by date: its content *is*
+`Δf_w = f_w^sim − f_w^obs`, the difference of the two blocks inside `wcut`
+(Pearson 0.981, median absolute difference 4×10⁻⁴ — the residual is the
+truncation of the exported digits). So `mis_source="internal"` reconstructs it
+from item 4 with no Petrel export. Switching to `"internal"` also widens the well
+set to the full intersection of the two blocks (993 vs 927 wells in the main
+case), so it is not bit-identical to the `"file"` mode that produced the
+manuscript numbers — keep the default `"file"` if you want to reproduce them.
+
+A note on the name: `swat_mismatch` does **not** contain a saturation mismatch.
+It is a water-cut mismatch, inherited from a Petrel objective-function export
+(`HM_WCT`, unit `sm3/sm3`). We verified this two ways: the paired differences
+above, and the fact that every one of the 155,560 paired cells satisfies
+`Δf_w + f_w^obs ≤ 1` — impossible for a saturation difference de-projected from
+the fractional-flow curve, which would reach `1 − S_wc` at most.
+
+No field data are distributed with this repository, and no item 3–4 can be
 reconstructed from the other ones alone: the streamline dump is a simulator
 output that must be requested when the case is run.
 
@@ -73,7 +91,8 @@ manuscript required changing them: `gamma_relax`, `gamma_decay`, `fit_tol`,
 `eps_tau`, `eps_f`, `eps_df`, `jump_back`, `jump_fwd`, `chi_min`, `chi_max`,
 `sw_front_min`, `alpha`, `max_vary`, `decay_times`, `sw_decay`, `mis_tol`,
 `dedup_cells`, `normalize_cnt`, `soft_clip`, `sw_write_mode`, `sw_seg_weight`,
-`sw_dedup_seg`, `fix_etot_combine`, `fix_break_fallback`.
+`sw_dedup_seg`, `fix_etot_combine`, `fix_break_fallback`, `mis_source`,
+`mis_drop_last`.
 
 **Class C — copy, then rescale if your discretisation differs.** These are
 counts of grid cells or snapshots, so a much coarser / finer grid or a different
@@ -88,7 +107,7 @@ dump frequency needs a proportional change: `sw_end_cells` (5), `sw_end_frac`
 
 per outer iteration n = 1, 2, … :
   1. run the simulator for this iteration
-  2. export  wcut  (items 4)  and  swat_mismatch  (item 5)
+  2. export  wcut  (item 4);  swat_mismatch  (item 6) only if mis_source="file"
   3. MATLAB:  startup;  iter_index = n;  main_SL_inversion_C2
        -> PERM_iter.GRDECL, SW_iter.GRDECL, perm_inversion_summary.txt
   4. import both updated fields into the deck as property updates of the same grid
@@ -208,7 +227,7 @@ short version.
 | 5.2 | current initial water saturation | `SW_iter.GRDECL` | Petrel grid/property export (`SWAT`, `NTG`) |
 | 5.3 | streamlines of the current run | `model.sim/<caseName>/<caseName>.SLNSPEC`, `.SLN0001 …` | the **simulator** (streamline output switched on) |
 | 5.4 | water-cut histories | `wcut` | simulated block: the run's well water-cut table; observed block: field production history |
-| 5.5 | water-cut mismatch series | `swat_mismatch` | observed − simulated water cut, per well and per reporting date |
+| 5.5 | water-cut mismatch series | `swat_mismatch` | simulated − observed water cut, per well and per reporting date (optional: `mis_source="internal"` builds it from `wcut`) |
 | 5.6 | relative-permeability table | `Krw.xlsx` | core/SCAL data: columns `Sw`, `krw`, `kro` |
 
 ### 5.1 Permeability field — `PERM_iter.GRDECL` (export from Petrel)
@@ -269,13 +288,42 @@ The C2 driver locates the blocks automatically by their `SUMMARY OF RUN`
 markers; the WLW driver uses the fixed line numbers `wcut_fixed_cols` from the
 configuration block (its export has no markers).
 
-### 5.5 Water-cut mismatch series — `swat_mismatch`
+### 5.5 Water-cut mismatch series — `swat_mismatch` (optional)
 
-Per well and per reporting date, the **observed − simulated** water cut (the
-quantity the saturation inversion back-projects). Zero means *not used* (the
-driver skips zeros); `-1` and `undef` are also read as zero. Layout:
+Per well and per reporting date, the **simulated − observed** water cut, i.e.
+`Δf_w = f_w^sim − f_w^obs`. Positive means the model waters out too early, which
+drives the saturation update down; negative means the opposite. Zero means *not
+used* (the driver skips zeros); `-1` and `undef` are also read as zero. Layout:
 [`docs/input_data.md`](docs/input_data.md) §5,
 `examples/swat_mismatch_template.txt`.
+
+**You do not have to produce this file.** It is exactly the difference between
+the two blocks of `wcut` (§5.4), which you already have — verified well by well
+and date by date on the main case (Pearson 0.981, median absolute difference
+4×10⁻⁴, the residual being digit truncation in the export). Set
+
+```matlab
+mis_source = "internal";   % build Δf_w from the two wcut blocks, no export needed
+```
+
+and the driver fills `mis_data` itself, using the per-cell validity mask so
+that `undef` on either side is treated exactly as before. `mis_drop_last = true`
+(default) drops the last reporting date, matching the step count of the Petrel
+export the manuscript used.
+
+Keep `mis_source = "file"` (the default) if you want to reproduce the paper
+numbers: the internal mode uses the full intersection of the two `wcut` blocks
+and therefore *more* wells (993 vs 927 in the main case — the 66 extra wells are
+mostly low-mismatch ones, 37 of which fall below `mis_tol` and get frozen), so
+it is not bit-identical.
+
+Despite its name, the file holds a **water-cut** mismatch, not a saturation
+mismatch — it comes from a Petrel objective-function export (`HM_WCT`, unit
+`sm3/sm3`). Two independent checks: the paired differences above, and the fact
+that all 155,560 paired cells satisfy `Δf_w + f_w^obs ≤ 1`, which a saturation
+difference de-projected from the fractional-flow curve could not (it would reach
+`1 − S_wc` at most). This also explains why `mis_tol = 0.05` is a water-cut
+threshold on the scale of `fit_tol`, not a saturation tolerance.
 
 ### 5.6 Relative-permeability table — `Krw.xlsx`
 
@@ -301,8 +349,11 @@ SW_path      = fullfile(caseRoot,"SW_iter.GRDECL");     % in : current saturatio
 SW_writepath = fullfile(caseRoot,"SW_iter.GRDECL");     % out: updated saturation field
 SLN_headpath = fullfile(caseRoot,"model.sim",caseName); % in : streamline files of this run
 wcut_readpath= fullfile(caseRoot,"wcut");               % in : water-cut histories
-mis_readpath = fullfile(caseRoot,"swat_mismatch");      % in : mismatch series
+mis_readpath = fullfile(caseRoot,"swat_mismatch");      % in : mismatch series (mis_source="file" only)
 krw_readpath = fullfile(caseRoot,"Krw.xlsx");           % in : relative-permeability table
+
+mis_source    = "file";           % "file": read mis_readpath | "internal": build it from wcut
+mis_drop_last = true;             % internal: drop the last date (match the Petrel export)
 
 write_slnmask_to_poro = false;    % debug only: write the streamline visit count to PORO
 ```
@@ -313,19 +364,19 @@ If an output path equals its input path, the input file is backed up first as
 ## 7. The outer-iteration run book
 
 §0.3 is the one-screen version of this section. Each call of the driver consumes
-one simulation result (streamlines + `wcut` + `swat_mismatch`) and produces the
-two updated fields, so the only thing that changes between calls is
-`iter_index` — plus the re-exported data.
+one simulation result (streamlines + `wcut`, plus `swat_mismatch` in `"file"`
+mode) and produces the two updated fields, so the only thing that changes
+between calls is `iter_index` — plus the re-exported data.
 
 ```text
 iter_index = 1  ──►  run the simulator (streamline output ON)
-                     export  wcut  and  swat_mismatch  of this run
+                     export  wcut  of this run   (+ swat_mismatch if mis_source="file")
                      run  main_SL_inversion_XX
                        ├─ writes PERM_iter.GRDECL  (updated PERMX/PERMY/PERMZ)
                        ├─ writes SW_iter.GRDECL    (updated SWAT)
                        └─ writes perm_inversion_summary.txt
 iter_index = 2  ──►  import both updated fields into the deck, run the simulator
-                     again, re-export wcut + swat_mismatch, run the driver ... repeat
+                     again, re-export wcut (+ swat_mismatch), run the driver ... repeat
 ```
 
 * The console prints the current `gamma_eff`, the saturation step `gain`, the
@@ -426,7 +477,7 @@ against the baseline methods is not favoured by a per-case calibration.
 | `max_vary` | `1` | Maximum saturation change per cell and per iteration (before the decay gain). |
 | `decay_times` | `3` | Divisor of the lower back-projection time bound. |
 | `sw_decay` | `0.9` | Per-iteration gain decay, `gain = sw_decay^(iter_index-1)`. |
-| `mis_tol` | `0.05` | Producer freezing tolerance on the mean absolute saturation mismatch. |
+| `mis_tol` | `0.05` | Producer freezing tolerance on the mean absolute mismatch. Although the driver variable is called a *saturation* mismatch, the series is a water-cut difference (§5.5), so this tolerance is on the same scale as `fit_tol`. |
 | `dedup_cells` | `true` | De-duplicate cells in the single-point write mode. |
 | `normalize_cnt` | `true` | Divide the update of repeatedly touched cells by `sqrt(count)` (hot-spot suppression). |
 | `soft_clip` | `true` | `tanh` soft clipping of the update (`false` → hard `min`/`max`). |
@@ -453,7 +504,7 @@ These are counts of cells or snapshots, not dimensionless constants:
 | `TOF_times` | `1500` | `20000` |
 | `wcut` reading | blocks found automatically via `SUMMARY OF RUN`; the simulated block is matched by `caseName`, the observed block by `Observed` | fixed line numbers `wcut_fixed_cols = [7 12 310 318 323 621]` |
 | date parsing | `parse_run_date` (Chinese locale `zh_CN`, e.g. `01-1月-1995`) for both files | plain `datetime(...)` (ISO-style dates) |
-| `swat_mismatch` reading | number of steps taken from the header (line 4) | all lines from 12 up to the last one |
+| mismatch series | `mis_source="file"`: number of steps from the header (line 4), or every line from 12 up to the last one; `mis_source="internal"`: built from the two `wcut` blocks | same switch (C2 reads blocks automatically, WLW by `wcut_fixed_cols`) |
 | model | 370 × 252 × 12 = 1 118 880 cells, no LGR | WLW block, with `CARFIN` refinement (auto-mapped) |
 
 Everything else — grid handling, breakthrough detection, minimum-subset
@@ -486,7 +537,7 @@ the drivers are placeholders (`path/to/your/case`).
 | --- | --- |
 | grid, local refinement and geometry | Part 1 (`readGRDECL` / `processGRDECL` / `computeGeometry`, `lgrcell2glocell`) |
 | water-cut reading, breakthrough detection, `E_bt`, `E_wc` | Part 2 |
-| mismatch series reading | Part 3 |
+| mismatch series reading (from file, or built internally from the two `wcut` blocks via `mis_source`) | Part 3 |
 | streamline reading (once per iteration) and LGR mapping | Part 4 (`file2Streamline`) |
 | minimum-streamline-subset selection, multipliers, projection | Part 5 |
 | back-projection of the water-cut mismatch | Part 6 |
@@ -537,8 +588,8 @@ issue tracker.
 本仓库是上述论文方法的 MATLAB 实现。**每次外层迭代只需一次 Intersect 正演模拟**，
 随后在 MATLAB 中同时完成两件事：
 
-1. **初始含水饱和度反演** —— 由生产井含水率失配（`swat_mismatch`）经流线反投影
-   （特征线法）更新 `SWAT`，写出 `SW_iter.GRDECL`；
+1. **初始含水饱和度反演** —— 由生产井含水率失配（`swat_mismatch`，即 `Δf_w = f_w^sim − f_w^obs`，
+   可由 `wcut` 两块内部生成）经流线反投影（特征线法）更新 `SWAT`，写出 `SW_iter.GRDECL`；
 2. **渗透率反演** —— 由见水时间失配与突破后含水增量，经最小流线子集筛选后沿流线做
    乘性修正并投影回网格，更新 `PERMX`/`PERMY`/`PERMZ`，写出 `PERM_iter.GRDECL`。
 
@@ -577,7 +628,10 @@ Excel 环境最省事（无 Excel 时把该行换成 `readmatrix` 或注释掉�
 * **[B] 可直接沿用论文值**：`gamma_relax/gamma_decay`、`fit_tol`、`swing_hi/swing_boost`、
   `e_bt_tol/e_wc_tol`、`w_bt`、`beta_weight`、`eps_tau/eps_f/eps_df`、`jump_back/jump_fwd`、
   `chi_min/chi_max`、`sw_front_min`、`alpha`、`max_vary`、`decay_times`、`sw_decay`、
-  `mis_tol` 以及各布尔开关（两个已发表算例均未改动）。
+  `mis_tol`、`mis_source/mis_drop_last` 以及各布尔开关（两个已发表算例均未改动）。
+* **数据可省一项**：`swat_mismatch` 的内容就是 `wcut` 两块之差（模拟 − 实测），置
+  `mis_source="internal"` 即由 `wcut` 内部生成，不必每轮再导一次；默认仍为 `"file"`，
+  因为论文数字是在该口径下跑出来的（内部模式井集更全，993 vs 927 口，结果不完全逐位一致）。
 * **[C] 可沿用，但网格尺度或快照间隔差得多时按比例改**：`sw_end_cells`、`sw_end_frac`、
   `sw_seg_maxlen`、`sln_expand_nb`。
 
@@ -589,7 +643,7 @@ Excel 环境最省事（无 Excel 时把该行换成 `readmatrix` 或注释掉�
 | `SW_iter.GRDECL` | 同上，勾选 `SWAT`（初始含水饱和度）与 `NTG` |
 | `model.sim/<caseName>/*.SLN*` | **由算例模型导出**：模拟器打开流线输出，产出 `<caseName>.SLNSPEC` 与 `.SLN0001…`，与生产数据同频率 |
 | `wcut` | 模拟块（本轮井含水率）+ 实测块（油田生产历史）拼成一个文本文件 |
-| `swat_mismatch` | 逐井逐时刻的"实测 − 模拟"含水率之差（即含水率误差序列） |
+| `swat_mismatch` | 逐井逐时刻的"模拟 − 实测"含水率之差（即含水率误差序列）；可选，`mis_source="internal"` 时由 `wcut` 两块生成 |
 | `Krw.xlsx` | 相渗数据：三列 `Sw / krw / kro`（当前算法未用到其派生曲线，但启动时会读取） |
 
 两份驱动的差异只有（1）配置块（读取路径 + `TOF_times`）与（2）`wcut` 读取段
