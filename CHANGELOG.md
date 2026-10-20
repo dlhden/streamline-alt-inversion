@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.1.4 — 2026-10-20
+
+**`mis_source` now defaults to `"internal"`: the driver no longer reads
+`swat_mismatch`.**
+
+* The default was `"file"` (reproducing the manuscript), which kept the export in
+  the critical path even though the series can be rebuilt from `wcut`. The
+  default is now `"internal"`, i.e. one less file to export every iteration, and
+  the well set becomes the full intersection of the two `wcut` blocks.
+* `mis_source = "file"` still works and is now the explicit "reproduce the
+  published numbers" switch. In that mode a missing `swat_mismatch` stops the run
+  with an error naming the switch, instead of failing inside the reader.
+* README §0.1/§5.5/§6/§8, `docs/input_data.md` §5 and both driver headers
+  updated: item 6 is optional and unused by default.
+* `build_repo_1012.py` now reads the renamed master sources (`*_1020.m`).
+
 ## v1.1.3 — 2026-10-20
 
 **Bug fix in the internal mismatch mode: wrong column when the two `wcut` blocks

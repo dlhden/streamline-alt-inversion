@@ -21,7 +21,7 @@ simulator that can write Eclipse-style GRDECL grids and Eclipse **unformatted**
 | 2 | current initial water saturation | `SW_iter.GRDECL` | `caseRoot` | Petrel property export (§2) |
 | 3 | streamlines of the current run | `<caseName>.SLNSPEC`, `<caseName>.SLN0001 …` | `caseRoot/model.sim/<caseName>/` | the **simulator** (§3) |
 | 4 | water-cut histories (simulated + observed) | `wcut` | `caseRoot` | simulator well history + field production data (§4) |
-| 5 | water-cut mismatch series | `swat_mismatch` | `caseRoot` | simulated − observed water cut, per well/date (§5); optional — `mis_source="internal"` builds it from item 4 |
+| 5 | water-cut mismatch series | `swat_mismatch` | `caseRoot` | simulated − observed water cut, per well/date (§5); **optional** — the default `mis_source="internal"` builds it from item 4 |
 | 6 | relative-permeability table | `Krw.xlsx` | `caseRoot` | core / SCAL data (§6) |
 
 `caseRoot` and `caseName` are the two lines you set in the driver's
@@ -202,11 +202,11 @@ mark shut-in periods or missing observations (`undef` and `-1` are read as 0 as
 well).
 
 **You do not have to build this file.** It is exactly the difference of the two
-blocks inside `wcut` (§4), which you already export. Set `mis_source =
-"internal"` in the configuration block and the driver computes it internally,
-using the per-cell `undef` mask on both sides. The default
-`mis_source = "file"` keeps reading this file, which is how the published
-results were produced.
+blocks inside `wcut` (§4), which you already export. The default is
+`mis_source = "internal"`: the driver computes the series internally, using the
+per-cell `undef` mask on both sides, and never opens this file. Only
+`mis_source = "file"` reads it — that is how the published results were
+produced, and in that mode a missing file stops the run with an explicit error.
 
 ### 5.1 Layout
 
@@ -220,7 +220,7 @@ The wells and dates should match the `wcut` file of the same run (the driver
 maps observed → simulated → streamline well names). Skeleton:
 [`../examples/swat_mismatch_template.txt`](../examples/swat_mismatch_template.txt).
 
-### 5.2 Producing the file (only if you keep `mis_source="file"`)
+### 5.2 Producing the file (only if you switch to `mis_source="file"`)
 
 For every producer and every reporting date, subtract the observed water cut of
 that date from the simulated water cut of the current run (the same source as the

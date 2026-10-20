@@ -80,13 +80,13 @@ mis_readpath = fullfile(caseRoot,"swat_mismatch");      % 输入：饱和度失�
 krw_readpath = fullfile(caseRoot,"Krw.xlsx");           % 输入：相渗曲线（饱和度反演用）
 
 % 饱和度失配的来源
+%   "internal" —— 由 wcut 的「模拟块 - 实测块」内部求差（默认，无需该项导出）
 %   "file"     —— 读上面的 mis_readpath（Petrel 目标函数导出，论文算例口径）
-%   "internal" —— 由 wcut 的「模拟块 - 实测块」内部求差，省去这一项导出
 % 依据：swat_mismatch 文件的实际内容就是 Δf_w = f_w^sim - f_w^obs（实测 Pearson
 %   0.981、中位绝对差 4e-4），所以完全可以内部算；internal 的井集是两块的交集，
-%   通常比手工导出更全（本案例 993 vs 927 口）。文件名为历史误称——它装的是
+%   通常比手工导出更全（本案例 992 vs 926 口）。文件名为历史误称——它装的是
 %   含水率失配，不是饱和度失配。
-mis_source    = "file";
+mis_source    = "internal";
 mis_drop_last = true;   % internal 时丢弃最后 1 个时刻，复刻 Petrel 导出的步数
 
 % 调试开关：把「流线经过次数」写入输出 GRDECL 的 PORO 字段。
@@ -467,6 +467,10 @@ if mis_source == "internal"
         numel(mis_wellnames), numel(raw_w_c), numel(raw_w_o), ...
         numel(raw_w_c) - numel(mis_wellnames), nMisT);
 else
+    if ~isfile(mis_readpath)
+        error(['mis_source="file" 但找不到 %s。' ...
+               '改 mis_source="internal" 可由 wcut 两块内部生成，无需该文件。'], mis_readpath);
+    end
     disp('读取饱和度失配数据矩阵')
     mislist_sw = readtxtfile(mis_readpath);
 

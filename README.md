@@ -41,17 +41,18 @@ which **only two are static**:
 | 3 | streamlines of the current run | `model.sim/<caseName>/<caseName>.SLNSPEC` + `.SLN0001 …` | **the simulator**, with streamline output switched on (§5.3) | **Yes** — one dump per simulation |
 | 4 | water-cut histories | `wcut` | simulated block: the run's well water-cut table; observed block: field production history (§5.4) | **Yes** — the simulated block |
 | 5 | relative-permeability table | `Krw.xlsx` (`Sw`, `krw`, `kro`) | core / SCAL data (§5.6) | No (must exist — the driver reads it — but it only builds `f_w(S_w)` for diagnostics; the update itself does not consume it) |
-| 6 *(optional)* | water-cut mismatch series | `swat_mismatch` | simulated − observed water cut, per well per reporting date (§5.5). **Only read when `mis_source="file"`; set `mis_source="internal"` and it is computed from item 4** | Yes (only in `"file"` mode) |
+| 6 *(optional)* | water-cut mismatch series | `swat_mismatch` | simulated − observed water cut, per well per reporting date (§5.5). **Not needed by default**: `mis_source="internal"` computes it from item 4; only `mis_source="file"` reads this export | Yes (only in `"file"` mode) |
 
-**Item 6 can be deleted from your workflow.** We checked the file against the
-water-cut tables of the same run, well by well and date by date: its content *is*
-`Δf_w = f_w^sim − f_w^obs`, the difference of the two blocks inside `wcut`
-(Pearson 0.981, median absolute difference 4×10⁻⁴ — the residual is the
-truncation of the exported digits). So `mis_source="internal"` reconstructs it
-from item 4 with no Petrel export. Switching to `"internal"` also widens the well
-set to the full intersection of the two blocks (993 vs 927 wells in the main
-case), so it is not bit-identical to the `"file"` mode that produced the
-manuscript numbers — keep the default `"file"` if you want to reproduce them.
+**Item 6 is optional — the default no longer uses it.** We checked the file
+against the water-cut tables of the same run, well by well and date by date: its
+content *is* `Δf_w = f_w^sim − f_w^obs`, the difference of the two blocks inside
+`wcut` (Pearson 0.981, median absolute difference 4×10⁻⁴ — the residual is the
+truncation of the exported digits). `mis_source` therefore defaults to
+`"internal"` and rebuilds it from item 4 with no Petrel export. If you do have
+the export and want to reproduce the manuscript numbers exactly, set
+`mis_source = "file"`: the internal mode uses the full intersection of the two
+blocks (992 vs 926 wells in the main case, the export having missed 66 of them),
+so it is not bit-identical.
 
 A note on the name: `swat_mismatch` does **not** contain a saturation mismatch.
 It is a water-cut mismatch, inherited from a Petrel objective-function export
@@ -227,7 +228,7 @@ short version.
 | 5.2 | current initial water saturation | `SW_iter.GRDECL` | Petrel grid/property export (`SWAT`, `NTG`) |
 | 5.3 | streamlines of the current run | `model.sim/<caseName>/<caseName>.SLNSPEC`, `.SLN0001 …` | the **simulator** (streamline output switched on) |
 | 5.4 | water-cut histories | `wcut` | simulated block: the run's well water-cut table; observed block: field production history |
-| 5.5 | water-cut mismatch series | `swat_mismatch` | simulated − observed water cut, per well and per reporting date (optional: `mis_source="internal"` builds it from `wcut`) |
+| 5.5 | water-cut mismatch series | `swat_mismatch` | simulated − observed water cut, per well and per reporting date (**optional** — the default `mis_source="internal"` builds it from `wcut`; only `"file"` reads this export) |
 | 5.6 | relative-permeability table | `Krw.xlsx` | core/SCAL data: columns `Sw`, `krw`, `kro` |
 
 ### 5.1 Permeability field — `PERM_iter.GRDECL` (export from Petrel)
@@ -300,22 +301,23 @@ used* (the driver skips zeros); `-1` and `undef` are also read as zero. Layout:
 **You do not have to produce this file.** It is exactly the difference between
 the two blocks of `wcut` (§5.4), which you already have — verified well by well
 and date by date on the main case (Pearson 0.981, median absolute difference
-4×10⁻⁴, the residual being digit truncation in the export). Set
+4×10⁻⁴, the residual being digit truncation in the export). The default is
 
 ```matlab
 mis_source = "internal";   % build Δf_w from the two wcut blocks, no export needed
 ```
 
-and the driver fills `mis_data` itself, using the per-cell validity mask so
-that `undef` on either side is treated exactly as before. `mis_drop_last = true`
-(default) drops the last reporting date, matching the step count of the Petrel
-export the manuscript used.
+so the driver fills `mis_data` itself, using the per-cell validity mask so that
+`undef` on either side is treated exactly as before, and never opens
+`swat_mismatch`. `mis_drop_last = true` (default) drops the last reporting date,
+matching the step count of the Petrel export the manuscript used.
 
-Keep `mis_source = "file"` (the default) if you want to reproduce the paper
-numbers: the internal mode uses the full intersection of the two `wcut` blocks
-and therefore *more* wells (992 vs 926 in the main case — the 66 extra wells are
-mostly low-mismatch ones, 37 of which fall below `mis_tol` and get frozen), so
-it is not bit-identical.
+Switch to `mis_source = "file"` only if you want to reproduce the paper numbers
+from the original export: the internal mode uses the full intersection of the two
+`wcut` blocks and therefore *more* wells (992 vs 926 in the main case — the 66
+extra wells are mostly low-mismatch ones, 37 of which fall below `mis_tol` and
+get frozen), so it is not bit-identical. In that mode a missing file stops the
+run with an explicit error instead of silently falling back.
 
 Despite its name, the file holds a **water-cut** mismatch, not a saturation
 mismatch — it comes from a Petrel objective-function export (`HM_WCT`, unit
@@ -352,7 +354,7 @@ wcut_readpath= fullfile(caseRoot,"wcut");               % in : water-cut histori
 mis_readpath = fullfile(caseRoot,"swat_mismatch");      % in : mismatch series (mis_source="file" only)
 krw_readpath = fullfile(caseRoot,"Krw.xlsx");           % in : relative-permeability table
 
-mis_source    = "file";           % "file": read mis_readpath | "internal": build it from wcut
+mis_source    = "internal";       % "internal": build it from wcut (default) | "file": read mis_readpath
 mis_drop_last = true;             % internal: drop the last date (match the Petrel export)
 
 write_slnmask_to_poro = false;    % debug only: write the streamline visit count to PORO
@@ -629,9 +631,9 @@ Excel 环境最省事（无 Excel 时把该行换成 `readmatrix` 或注释掉�
   `e_bt_tol/e_wc_tol`、`w_bt`、`beta_weight`、`eps_tau/eps_f/eps_df`、`jump_back/jump_fwd`、
   `chi_min/chi_max`、`sw_front_min`、`alpha`、`max_vary`、`decay_times`、`sw_decay`、
   `mis_tol`、`mis_source/mis_drop_last` 以及各布尔开关（两个已发表算例均未改动）。
-* **数据可省一项**：`swat_mismatch` 的内容就是 `wcut` 两块之差（模拟 − 实测），置
-  `mis_source="internal"` 即由 `wcut` 内部生成，不必每轮再导一次；默认仍为 `"file"`，
-  因为论文数字是在该口径下跑出来的（内部模式井集更全，993 vs 927 口，结果不完全逐位一致）。
+* **数据可省一项**：`swat_mismatch` 的内容就是 `wcut` 两块之差（模拟 − 实测），
+  默认 `mis_source="internal"` 即由 `wcut` 内部生成，不必再导一次；内部模式井集更全
+  （992 vs 926 口，含导出漏掉的 66 口）。只有想逐位复现论文数字时才置 `"file"`。
 * **[C] 可沿用，但网格尺度或快照间隔差得多时按比例改**：`sw_end_cells`、`sw_end_frac`、
   `sw_seg_maxlen`、`sln_expand_nb`。
 
@@ -643,7 +645,7 @@ Excel 环境最省事（无 Excel 时把该行换成 `readmatrix` 或注释掉�
 | `SW_iter.GRDECL` | 同上，勾选 `SWAT`（初始含水饱和度）与 `NTG` |
 | `model.sim/<caseName>/*.SLN*` | **由算例模型导出**：模拟器打开流线输出，产出 `<caseName>.SLNSPEC` 与 `.SLN0001…`，与生产数据同频率 |
 | `wcut` | 模拟块（本轮井含水率）+ 实测块（油田生产历史）拼成一个文本文件 |
-| `swat_mismatch` | 逐井逐时刻的"模拟 − 实测"含水率之差（即含水率误差序列）；可选，`mis_source="internal"` 时由 `wcut` 两块生成 |
+| `swat_mismatch` | 逐井逐时刻的"模拟 − 实测"含水率之差（即含水率误差序列）；**默认不需要**（由 `wcut` 两块内部生成），仅 `mis_source="file"` 时读取 |
 | `Krw.xlsx` | 相渗数据：三列 `Sw / krw / kro`（当前算法未用到其派生曲线，但启动时会读取） |
 
 两份驱动的差异只有（1）配置块（读取路径 + `TOF_times`）与（2）`wcut` 读取段
