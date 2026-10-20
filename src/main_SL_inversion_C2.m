@@ -467,9 +467,10 @@ if mis_source == "internal"
         wi = find(strcmp(raw_w_o, raw_w_c{i}), 1);
         if ~isempty(wi), miswid_obs(i) = wi; end
     end
-    keep = miswid_obs > 0;
-    mis_wellnames = raw_w_c(keep);
-    miswid_obs    = miswid_obs(keep);
+    keep  = miswid_obs > 0;
+    cidx  = find(keep);               % 保留井在模拟块中的原始列号
+    mis_wellnames = raw_w_c(cidx);
+    miswid_obs    = miswid_obs(cidx);
 
     % 时间轴：两块日期须一致；默认丢弃最后 1 个时刻以复刻 Petrel 导出的步数
     nChk = min(numel(mis_datetime_wc), numel(mis_datetime_wo));
@@ -482,18 +483,21 @@ if mis_source == "internal"
     mis_datetime = mis_datetime_wc(1:nMisT);
 
     % 逐井逐时刻作差；任一侧缺测则该时刻不计入（等价于外部文件里的 undef->0）
+    % 注意：两块的井序不同、井集也不等，必须用 cidx(j) 回查模拟块原始列
     mis_data = zeros(nMisT, numel(mis_wellnames));
     for j = 1:numel(mis_wellnames)
+        jc = cidx(j);
         io = miswid_obs(j);
         for k = 1:nMisT
-            if valid_case(k,j) && valid_observed(k,io)
-                mis_data(k,j) = data_case(k,j) - data_observed(k,io);
+            if valid_case(k,jc) && valid_observed(k,io)
+                mis_data(k,j) = data_case(k,jc) - data_observed(k,io);
             end
         end
     end
     mis_data(~isfinite(mis_data)) = 0;
-    fprintf('内部失配：%d 口井（模拟 %d ∩ 实测 %d），%d 个时刻\n', ...
-        numel(mis_wellnames), numel(raw_w_c), numel(raw_w_o), nMisT);
+    fprintf('内部失配：%d 口井（模拟 %d ∩ 实测 %d，丢弃 %d 口无实测井），%d 个时刻\n', ...
+        numel(mis_wellnames), numel(raw_w_c), numel(raw_w_o), ...
+        numel(raw_w_c) - numel(mis_wellnames), nMisT);
 else
     disp('读取饱和度失配数据矩阵')
     mislist_sw = readtxtfile(mis_readpath);
