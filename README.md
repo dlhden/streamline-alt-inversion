@@ -241,9 +241,12 @@ The method needs the streamline snapshot of **each** simulation run:
 
 * switch on the simulator's streamline output (Intersect writes the Eclipse
   **unformatted** files `<caseName>.SLNSPEC` and `<caseName>.SLN0001 …`);
-* dump them at the same frequency as the production data (monthly in the
-  published cases) — the number of `.SLN####` files defines the number of
-  snapshots;
+* dump them at a cadence comparable to the reporting interval of the production
+  data — the number of `.SLN####` files defines the number of snapshots. The two
+  published cases use **30 dumps** (main case, one per year over its 30-year
+  history) and **100 dumps** (WLW). Annual dumps are already sufficient for a
+  30-year history; a finer cadence only places the back-projection window more
+  precisely, and `sl_years` (§8.1) sets how long one snapshot is trusted.
 * put them in `caseRoot/model.sim/<caseName>/` and set `caseName` to that
   folder name. **`caseName` must also match the block title of the simulated
   water-cut block inside `wcut`**, otherwise the driver stops with an explicit
