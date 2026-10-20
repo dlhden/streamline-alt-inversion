@@ -21,15 +21,94 @@ files) a streamline-capable simulator.
 
 ---
 
-## 0. Read this first: two parameters you must set yourself
+## 0. Read this first
 
-The drivers ship with the values used in the paper, but two of them are
-**case-specific and must not be copied blindly**:
+Three things are needed before the first run: **(0.1) six input data items**,
+**(0.2) a short list of parameters you must calibrate on your own reservoir**
+(the rest can be copied from the paper), and **(0.3) the iteration procedure**.
+Sections 5–8 give the details; this section is the checklist.
 
-| Parameter | Why you must set it | Where |
-| --- | --- | --- |
-| **`TOF_times`** | Streamline time-of-flight is **dimensionless**. The code converts it to physical time with `SW_TOF = TOF * TOF_times` (≈ days) to locate the water front before a given date. The factor depends on the simulator's streamline time step / output units, so it changes from case to case. The two cases in this repository use **1500** (C2) and **20000** (WLW). A wrong value shifts the whole back-projection window and the saturation update becomes meaningless — if the saturation update looks wrong, suspect this first. | configuration block |
-| **`SW_min`, `SW_max`** | Saturation clip bounds of the update. There is no universal value: `SW_min` is normally the connate water saturation (`S_wc`) or the smallest saturation your model allows, and `SW_max` is normally `1 − S_orw` or the simulator deck's upper limit (the main case uses `0.999883`, taken from the deck). `SW_max` must not exceed the deck limit, or the written field will be truncated on the next run. | configuration block |
+### 0.1 What data you need
+
+Everything lives in the folder `caseRoot`, except the streamlines, which live in
+`caseRoot/model.sim/<caseName>/`. Six items, of which **only two are static**:
+
+| # | Item | File | Produced from | Redone every iteration? |
+| --- | --- | --- | --- | --- |
+| 1 | current permeability field | `PERM_iter.GRDECL` (`PERMX`,`PERMY`,`PERMZ`, `NTG`, and the grid geometry) | Petrel property export, or the deck itself (§5.1) | **No** — export once (static/geological field); afterwards the driver writes it |
+| 2 | current initial water saturation | `SW_iter.GRDECL` (`SWAT`, `NTG`) | the model's initial-condition workflow (J-function, S-height, …) (§5.2) | **No** — export once; afterwards the driver writes it |
+| 3 | streamlines of the current run | `model.sim/<caseName>/<caseName>.SLNSPEC` + `.SLN0001 …` | **the simulator**, with streamline output switched on (§5.3) | **Yes** — one dump per simulation |
+| 4 | water-cut histories | `wcut` | simulated block: the run's well water-cut table; observed block: field production history (§5.4) | **Yes** — the simulated block |
+| 5 | water-cut mismatch series | `swat_mismatch` | observed − simulated water cut, per well per reporting date (§5.5); can be generated from the same two tables as item 4 | **Yes** |
+| 6 | relative-permeability table | `Krw.xlsx` (`Sw`, `krw`, `kro`) | core / SCAL data (§5.6) | No (read at start-up only; not consumed by the current update) |
+
+No field data are distributed with this repository, and no item 3–5 can be
+reconstructed from the other ones alone: the streamline dump is a simulator
+output that must be requested when the case is run.
+
+### 0.2 Which parameters must be calibrated, and which you can copy
+
+The drivers ship with the values used in the paper. They fall into three
+classes — the full table is in §8:
+
+**Class A — must be derived from your own reservoir. The paper values are the
+two published cases, *not* transferable defaults.**
+
+| Parameter | Why it cannot be copied | How to set it | Paper |
+| --- | --- | --- | --- |
+| `TOF_times` | streamline TOF is **dimensionless**; the code converts it to physical time with `SW_TOF = TOF × TOF_times` (≈ days) to locate the water front at a given date. The factor depends on the simulator's streamline time step / output units. The two cases here differ by a factor of **13** (1500 vs 20000). A wrong value shifts the whole back-projection window and the saturation update becomes meaningless. | run 1–2 iterations; check that the printed saturation change and the water-cut fit move in the right direction; if not, change the order of magnitude | 1500 (C2) / 20000 (WLW) |
+| `SW_min`, `SW_max` | saturation clip bounds: `SW_min` is the connate water saturation (or the smallest value your model allows), `SW_max` is `1 − S_orw` or the deck's upper limit. `SW_max` above the deck limit gets truncated on the next run. | read them off your `SWOF`/`KRW` table and the deck | 0.01 / 0.999883 |
+| `PERM_min`, `PERM_max` | geological bounds of the multiplier projection; they are the permeability range of *your* field | from the core/log permeability distribution | 0.01 / 800 mD |
+| `miuo`, `miuw` | fluid viscosities used when building `f_w(S_w)` from `Krw.xlsx` | your PVT | 2.8 / 1 mPa·s |
+| `wct_break_thr` | fallback breakthrough threshold; must sit above the noise floor of the observed water cut, otherwise shut-in / restart spikes are read as breakthrough | look at the observed water-cut noise of a few wells | 0.02 |
+| `kappa_w` + `df_obs_mode` | the **calibrated pair** of §4 of the manuscript (Table 5): they fix the scale of the per-streamline hypothetical increment relative to the observed one. The optimum depends on the streamline density and on how strongly the observed water cut is smoothed. WLW: (0.5, two-sample window); main case: (1.5, `[t_b, t_e]`). Because `Δf ∝ a^κ` is monotone, κ does not change the *ranking* of streamlines, only the subset length — so a sub-optimal κ still works, it just makes the support longer (or collapses it onto one streamline). | scan κ ∈ {0.25, 0.5, 0.75, 1, 1.5, 2} × the two windows and keep the pair where the median `Δf_pre/Δf_obs` is closest to 1 **and** roughly half of the producers still get a non-degenerate subset (`M* < N_cand`); the script used for the manuscript is `spe0905_verify/run_variants2.py` in the authors' working copy — the six-line scan is described in §8.1 | 0.5 + two-sample |
+| `sl_years` | validity window of a streamline snapshot (years); tied to the snapshot cadence and to the length of the history | ≈ number of years you can trust one flow field; with annual snapshots the paper uses 6 | 6 |
+| `wcut_fixed_cols` | line layout of *your* `wcut` export (WLW driver only; the C2 driver detects blocks automatically) | count the lines of your export header | `[7 12 310 318 323 621]` |
+| `caseRoot`, `caseName` | your paths; `caseName` must equal both the streamline folder name and the title of the simulated block inside `wcut` | — | placeholders |
+
+**Class B — copy the paper values.** They were used unchanged in both published
+cases (two reservoirs, 1006 and ~1000 wells) and no sensitivity run in the
+manuscript required changing them: `gamma_relax`, `gamma_decay`, `fit_tol`,
+`swing_hi`, `swing_boost`, `e_bt_tol`, `e_wc_tol`, `w_bt`, `beta_weight`,
+`eps_tau`, `eps_f`, `eps_df`, `jump_back`, `jump_fwd`, `chi_min`, `chi_max`,
+`sw_front_min`, `alpha`, `max_vary`, `decay_times`, `sw_decay`, `mis_tol`,
+`dedup_cells`, `normalize_cnt`, `soft_clip`, `sw_write_mode`, `sw_seg_weight`,
+`sw_dedup_seg`, `fix_etot_combine`, `fix_break_fallback`.
+
+**Class C — copy, then rescale if your discretisation differs.** These are
+counts of grid cells or snapshots, so a much coarser / finer grid or a different
+dump frequency needs a proportional change: `sw_end_cells` (5), `sw_end_frac`
+(0.5), `sw_seg_maxlen` (150 cells), `sln_expand_nb` (2 snapshots).
+
+### 0.3 How to operate it
+
+```text
+[once]  export PERM_iter.GRDECL + SW_iter.GRDECL  (items 1–2)
+        switch the simulator's streamline output ON
+
+per outer iteration n = 1, 2, … :
+  1. run the simulator for this iteration
+  2. export  wcut  (items 4)  and  swat_mismatch  (item 5)
+  3. MATLAB:  startup;  iter_index = n;  main_SL_inversion_C2
+       -> PERM_iter.GRDECL, SW_iter.GRDECL, perm_inversion_summary.txt
+  4. import both updated fields into the deck as property updates of the same grid
+  5. n <- n + 1, go to 1
+stop when the history-period water-cut fit stops improving; select the model on the
+history fit only, then evaluate the prediction once (that is the protocol used in
+the paper — the prediction is never used to choose the iteration)
+```
+
+```matlab
+>> cd streamline-alt-inversion
+>> startup                              % adds src/, examples/ and the bundled MRST
+>> test_toolbox                         % optional self-check
+>> edit src/main_SL_inversion_C2.m      % caseRoot, caseName, and the Class A parameters
+>> main_SL_inversion_C2
+```
+
+What to watch on the console: the printed `gamma_eff`, the saturation step
+`gain`, the saturation-change statistics, and the per-well list of frozen
+producers with the reason. §7 explains how to read them.
 
 ---
 
@@ -230,6 +309,11 @@ If an output path equals its input path, the input file is backed up first as
 
 ## 7. The outer-iteration run book
 
+§0.3 is the one-screen version of this section. Each call of the driver consumes
+one simulation result (streamlines + `wcut` + `swat_mismatch`) and produces the
+two updated fields, so the only thing that changes between calls is
+`iter_index` — plus the re-exported data.
+
 ```text
 iter_index = 1  ──►  run the simulator (streamline output ON)
                      export  wcut  and  swat_mismatch  of this run
@@ -249,57 +333,115 @@ iter_index = 2  ──►  import both updated fields into the deck, run the sim
 
 ## 8. Parameter reference
 
-All parameters are defined in one block at the top of each driver. Parameters
-marked **[tune]** are case-specific and were calibrated per reservoir in the
-published applications.
+Every parameter is defined in one block at the top of each driver. They are
+grouped by **what you are allowed to copy**: **A** (§8.1) must be calibrated on
+your own reservoir, **B** (§8.2) can be taken from the paper unchanged, **C**
+(§8.3) can be taken from the paper but has to be rescaled if your grid or
+snapshot cadence differs. §0.2 is the short version of the A-class list.
+
+The sensitivity of the B-class values is reported in Table 7 of the manuscript;
+none of them had to leave its base value to obtain the published results.
+
+### 8.1 Class A — calibrate per reservoir
+
+| Parameter | Value in the paper | Meaning and how to set it |
+| --- | --- | --- |
+| `TOF_times` | `1500` (C2), `20000` (WLW) | Dimensionless-TOF → physical-time factor, `SW_TOF = TOF * TOF_times` (≈ days). It depends on the simulator's streamline time step / output unit; the two cases here differ by 13×. **If the saturation update looks wrong, suspect this first.** Check after 1–2 iterations: does the printed saturation change and the water-cut fit move in the right direction? If not, change the order of magnitude. |
+| `SW_min`, `SW_max` | `0.01`, `0.999883` | Saturation clip bounds. `SW_min` = connate water saturation (or the smallest saturation your model allows); `SW_max` = `1 − S_orw`, or the deck's upper limit (0.999883 is the deck limit of the main case). `SW_max` above the deck limit is truncated by the simulator on the next run. |
+| `PERM_min`, `PERM_max` | `0.01`, `800` mD | Geological bounds of the projected multiplier. Take the permeability range of your field. |
+| `miuo`, `miuw` | `2.8`, `1` mPa·s | Fluid viscosities used to build `f_w(S_w)` from `Krw.xlsx`. |
+| `wct_break_thr` | `0.02` | Fallback breakthrough threshold ("first time the water cut exceeds …"). Must sit above the noise floor of the observed water cut, otherwise shut-in / restart spikes are read as breakthroughs. |
+| `kappa_w` | `0.5` | Tempering exponent of the flow-fraction weighting, Eq. (30). Calibrated together with `df_obs_mode` (§8.1.1). Because `Δf ∝ a^κ` is monotone, κ does **not** change the ranking of the streamlines and does not change which one is selected first — it only changes how many of them are needed to reach the observed increment. A sub-optimal κ therefore still converges, with a longer (or, at very small κ, a collapsed) subset. |
+| `df_obs_mode` | `"two_sample"` | Window used to read `Δf^obs` in Eq. (35): `"two_sample"` = one sampling interval on each side of breakthrough, `[t_b − Δt_s, t_b + Δt_s]`; `"stage"` = `[t_b, t_e]`, where `t_e` is the first time after `t_b` at which the derivative of the observed water cut falls below `eps_df`. |
+| `sl_years` | `6` | Validity window (years) of one streamline snapshot. Set it from the snapshot cadence and from how long you trust a single flow field. |
+| `wcut_fixed_cols` | `[7 12 310 318 323 621]` | Line layout of *your* `wcut` export — WLW driver only; the C2 driver finds the blocks by their `SUMMARY OF RUN` markers. |
+| `caseRoot`, `caseName` | placeholders | Path and case name. `caseName` must equal both the streamline folder name and the title of the simulated block inside `wcut`. |
+
+#### 8.1.1 Calibrating `kappa_w` and `df_obs_mode`
+
+The pair controls how the per-streamline hypothetical increment is scaled against
+the observed one: the single-front estimate of Eq. (30) is systematically too
+small when many low-rate streamlines feed one producer, and κ tempers that
+dilution. The manuscript's Table 5 is exactly this scan, run on both reservoirs.
+
+The scan does **not** require new simulations — the driver is pure
+post-processing of one streamline snapshot, and `perm_inversion_summary.txt`
+already contains the three numbers the criterion needs (`N_cand`, `M_star`,
+`df_line`, `df_obs`). Procedure:
+
+1. Point `PERM_outpath` / `SW_writepath` at a scratch folder, so that the scan
+   does not overwrite the fields of the real iteration.
+2. For each candidate pair `(kappa_w, df_obs_mode)`, set the two values, run the
+   driver once with the same `iter_index`, and keep
+   `perm_inversion_summary.txt`.
+3. From each summary, compute
+   `median(df_line ./ (df_obs + 1e-4))` over the producers, and the share of
+   producers with `M_star == N_cand` (the degenerated ones, whose threshold was
+   never reached and which therefore fall back to the full candidate set).
+4. Choose the pair where the median ratio is closest to 1 **and** roughly half of
+   the producers still get a non-degenerate subset — i.e. a median `M_star` of a
+   few streamlines out of a median `N_cand` of ~10. A median `M_star = 1` means
+   the rule has collapsed onto the single most influential streamline, which is
+   the opposite failure mode and is just as undesirable as full-set selection.
+
+Reference points from the manuscript (8 columns of Table 5, 479 producers for
+WLW and 426 for the main case): WLW is closest to unity at `(0.5, two_sample)`
+with a median ratio 0.976, 50.9 % degenerated and a median subset of 3 out of 13;
+the main case is closest at `(1.5, stage)` with 0.951, 50.2 % and 3 out of 8.
+Both settings are equally "correct" — the working point is case-specific, the
+working *behaviour* is not. The paper deliberately keeps one setting for the two
+cases (0.5 + `two_sample`) instead of tuning per case, so that the comparison
+against the baseline methods is not favoured by a per-case calibration.
+
+### 8.2 Class B — copy the paper values
 
 **Permeability inversion**
 
-| Parameter | Meaning |
-| --- | --- |
-| `iter_index` | current outer-iteration index (1 at the first iteration with a streamline dump) |
-| `gamma_relax`, `gamma_decay` | relaxation factor and its geometric decay, `gamma_eff = gamma_relax * gamma_decay^(iter_index-1)` |
-| `fit_tol` | producer freezing tolerance: wells whose mean relative water-cut error is below it are not corrected this iteration |
-| `swing_hi`, `swing_boost` | critical band `[fit_tol, swing_hi)` and the step amplification applied inside it |
-| `e_bt_tol`, `e_wc_tol` | dead zones of the breakthrough-time and water-cut-level signals |
-| `w_bt` | weight of the breakthrough-time signal (the water-cut-level signal takes `1 - w_bt`) |
-| `beta_weight` | weight `beta` of the travel-time contribution in the combined streamline contribution |
-| `kappa_w` | tempering exponent of the flow-fraction weighting (`1` = strict flow weighting) |
-| `eps_tau`, `eps_f`, `eps_df` | regularisation constants and the derivative threshold used for breakthrough detection |
-| `jump_back`, `jump_fwd` | sampling window around the instantaneous water-cut jump |
-| `chi_min`, `chi_max` | per-iteration bounds of the streamline permeability multiplier |
-| `PERM_min`, `PERM_max` | geological permeability bounds (mD) |
-| `sw_front_min` | minimum saturation gradient required to identify a water front on a streamline |
-| `fix_etot_combine` | combine the two signals *before* the `tanh` (avoids the saturation-induced cancellation of large mismatches) |
-| `fix_break_fallback` | fall back to "first time the water cut exceeds `wct_break_thr`" when the derivative criterion finds no breakthrough |
-| `wct_break_thr` **[tune]** | water-cut threshold of that fallback |
-| `sln_expand_nb` **[tune]** | number of snapshots to expand forward/backward when the frozen snapshot contains no streamline ending at the well (`0` disables) |
-| `make_plots` | draw per-well diagnostic figures |
-| `write_slnmask_to_poro` | **debug only.** When `true`, the streamline visit count overwrites the `PORO` keyword of the written GRDECL — leave it `false` for production runs |
+| Parameter | Paper | Meaning |
+| --- | --- | --- |
+| `iter_index` | `1` | Current outer-iteration index (1 at the first iteration that has a streamline dump). |
+| `gamma_relax`, `gamma_decay` | `1`, `0.9` | Relaxation factor and its geometric decay, `gamma_eff = gamma_relax * gamma_decay^(iter_index-1)`. |
+| `fit_tol` | `0.20` | Producer freezing tolerance: wells whose mean relative water-cut error is below it are not corrected this iteration. |
+| `swing_hi`, `swing_boost` | `0.40`, `1.5` | Critical band `[fit_tol, swing_hi)` and the step amplification applied inside it. |
+| `e_bt_tol`, `e_wc_tol` | `0.10`, `0.15` | Dead zones of the breakthrough-time and water-cut-level signals. |
+| `w_bt` | `0.5` | Weight of the breakthrough-time signal (the water-cut-level signal takes `1 − w_bt`). |
+| `beta_weight` | `0.5` | Weight `β` of the travel-time contribution in the combined streamline contribution, Eq. (33). |
+| `eps_tau`, `eps_f`, `eps_df` | `1e-3`, `1e-4`, `0.01` | Regularisation constants of Eqs. (31)–(36) and the derivative threshold used for breakthrough detection. |
+| `jump_back`, `jump_fwd` | `1`, `1` | Sampling window around the instantaneous water-cut jump (used when `df_obs_mode = "two_sample"`). |
+| `chi_min`, `chi_max` | `0.5`, `2.0` | Per-iteration bounds of the streamline permeability multiplier. |
+| `sw_front_min` | `0.05` | Minimum saturation gradient required to identify a water front on a streamline. |
+| `fix_etot_combine` | `true` | Combine the two signals *before* the `tanh` (avoids the saturation-induced cancellation of large mismatches). |
+| `fix_break_fallback` | `true` | Fall back to "first time the water cut exceeds `wct_break_thr`" when the derivative criterion finds no breakthrough. |
+| `make_plots` | `false` | Draw per-well diagnostic figures. |
+| `write_slnmask_to_poro` | `false` | **Debug only.** When `true`, the streamline visit count overwrites the `PORO` keyword of the written GRDECL — leave it `false` for production runs. |
 
 **Saturation inversion**
 
-| Parameter | Meaning |
-| --- | --- |
-| `miuo`, `miuw` | oil / water viscosity used when building `f_w(S_w)` from `Krw.xlsx` |
-| `sl_years` | validity window of a streamline snapshot (years) |
-| `alpha` | explicit step factor applied to the accumulated mismatch (`1` in the reported applications) |
-| `TOF_times` **[must be tuned]** | dimensionless-TOF → physical-time conversion factor (§0) |
-| `SW_min`, `SW_max` **[must be set by you]** | saturation clip bounds (§0) |
-| `max_vary` | maximum saturation change per cell and per iteration (before the decay gain) |
-| `decay_times` | divisor of the lower back-projection time bound |
-| `endtime_weight` | **unused** (kept from the original codes) |
-| `sw_decay` | per-iteration gain decay, `gain = sw_decay^(iter_index-1)` |
-| `mis_tol` | producer freezing tolerance on the mean absolute saturation mismatch |
-| `dedup_cells` | de-duplicate cells in the single-point write mode |
-| `normalize_cnt` | divide the update of repeatedly touched cells by `sqrt(count)` (hot-spot suppression) |
-| `soft_clip` | `tanh` soft clipping of the update (`false` → hard `min`/`max`) |
-| `sw_write_mode` | `"single"` = write only the front cell `GLO_CELL(k_i)` (original behaviour); `"segment"` = spread the same total over the whole `[k_i → well]` segment |
-| `sw_seg_weight` | in-segment weights: `"uniform"` or `"end_boost"` (uniform + extra weight on the last `sw_end_cells` cells) |
-| `sw_end_cells`, `sw_end_frac` **[tune]** | number of well-end cells that must receive an update and the share of the update given to them |
-| `sw_seg_maxlen` **[tune]** | maximum segment length (cells); `0` = unlimited |
-| `sw_dedup_seg` | keep per-cell de-duplication in segment mode (default `false`; see the comment in the driver) |
+| Parameter | Paper | Meaning |
+| --- | --- | --- |
+| `alpha` | `1` | Explicit step factor applied to the accumulated mismatch. |
+| `max_vary` | `1` | Maximum saturation change per cell and per iteration (before the decay gain). |
+| `decay_times` | `3` | Divisor of the lower back-projection time bound. |
+| `sw_decay` | `0.9` | Per-iteration gain decay, `gain = sw_decay^(iter_index-1)`. |
+| `mis_tol` | `0.05` | Producer freezing tolerance on the mean absolute saturation mismatch. |
+| `dedup_cells` | `true` | De-duplicate cells in the single-point write mode. |
+| `normalize_cnt` | `true` | Divide the update of repeatedly touched cells by `sqrt(count)` (hot-spot suppression). |
+| `soft_clip` | `true` | `tanh` soft clipping of the update (`false` → hard `min`/`max`). |
+| `sw_write_mode` | `"segment"` | `"single"` = write only the front cell `GLO_CELL(k_i)` (original behaviour); `"segment"` = spread the same total over the whole `[k_i → well]` segment. |
+| `sw_seg_weight` | `"end_boost"` | In-segment weights: `"uniform"`, or `"end_boost"` (uniform + extra weight on the last `sw_end_cells` cells). |
+| `sw_dedup_seg` | `false` | Keep per-cell de-duplication in segment mode (see the comment in the driver; `true` disables the segment fix). |
+| `endtime_weight` | `3` | **Unused** (kept from the original codes). |
 
+### 8.3 Class C — copy, then rescale with your discretisation
+
+These are counts of cells or snapshots, not dimensionless constants:
+
+| Parameter | Paper | Adjust when |
+| --- | --- | --- |
+| `sw_end_cells` | `5` | the near-well cell size differs appreciably from the published grids (keep the same physical length, i.e. scale with the cell size); the paper's sensitivity run tolerates 3–5 |
+| `sw_end_frac` | `0.5` | the share of the update that must reach the well end; keep 0.5 unless the well-end cells are much larger than the rest |
+| `sw_seg_maxlen` | `150` | cells per segment; `0` = unlimited. Scale with the number of cells between the front and the well |
+| `sln_expand_nb` | `2` | snapshots added forward/backward when the frozen snapshot contains no streamline ending at a well (`0` disables); larger values are needed when the dump cadence is coarse |
 ## 9. Differences between the two drivers
 
 | Aspect | `main_SL_inversion_C2` (main case) | `main_SL_inversion_WLW` (second case) |
@@ -356,12 +498,13 @@ the drivers are placeholders (`path/to/your/case`).
 * All saturation updates are bounded per cell and per producer and decay with
   the iteration index, so the initial hydrocarbon pore volume changes only
   marginally (below 0.2 % in the reported applications).
-* `TOF_times` and the saturation bounds are **not** universal constants — see §0.
+* `TOF_times`, the saturation bounds and the `kappa_w`/`df_obs_mode` pair are
+  **not** universal constants — see §0.2 and §8.1.
 * The two drivers share one engine but they were **not** run with identical
   per-case settings: `TOF_times` differs, the `wcut` layouts differ, and the
-  saturation-write parameters (`sw_end_cells`, `sw_seg_maxlen`) are
-  case-specific. A single parameter set is not expected to reproduce both case
-  studies from a cold start.
+  saturation-write parameters (`sw_end_cells`, `sw_seg_maxlen`) are counts of
+  cells and therefore scale with the grid (§8.3). A single parameter set is not
+  expected to reproduce both case studies from a cold start.
 * Comments in the source files are written in Chinese; identifiers and all
   documentation are in English.
 * `processGRDECL` requires a well-formed Eclipse grid (faults, dipping layers and
@@ -415,14 +558,25 @@ Excel 环境最省事（无 Excel 时把该行换成 `readmatrix` 或注释掉�
 运行后把 `PERM_iter.GRDECL` / `SW_iter.GRDECL` 导回模拟器（**打开流线输出**）跑下一轮，
 `iter_index` 加一，重复。
 
-**必须自己确定的两件事**（详见 §0）：
+**参数分三类**（完整表见 §8，速查见 §0.2）：
 
-* `TOF_times`：流线 TOF 无量纲量 → 物理时间的换算倍数，与模拟器的流线时间步长/单位
-  有关，**不能照搬**。本仓库两个案例分别取 1500（C2）与 20000（WLW）。取错会让反投影
-  时间窗整体错位，饱和度修正完全打不准 —— 结果异常时先查这个参数。
-* `SW_min` / `SW_max`：饱和度更新的截断上下限，通常分别取束缚水饱和度与
-  `1 − S_orw`（或 deck 的含水饱和度上限）；`SW_max` 不能超过 deck 上限，否则下一轮
-  模拟会把写出的场截断。
+* **[A] 必须按自己的油藏标定，论文值不能照搬**：
+  * `TOF_times`：流线 TOF 是无量纲量，到物理时间的换算倍数与模拟器的流线时间步长/单位
+    有关。本仓库两案例分别取 1500（C2）与 20000（WLW），**相差 13 倍**。取错会让反投影
+    时间窗整体错位，饱和度修正完全打不准 —— 结果异常时先查这个参数。
+  * `SW_min` / `SW_max`：饱和度更新的截断上下限，通常分别取束缚水饱和度与
+    `1 − S_orw`（或 deck 的含水饱和度上限）；`SW_max` 不能超过 deck 上限。
+  * `kappa_w` + `df_obs_mode`：二者的**成对**标定（论文表 5）。最优点随区块变
+    （WLW：0.5 + 两步窗口；主案例：1.5 + `[t_b,t_e]`），但工作特性不变（比值中位≈0.95–0.98、
+    退化井≈50%、子集中位 3 条）。扫描方法见 §8.1.1 —— **不需要重跑模拟器**，驱动只做后处理。
+  * 其余：`PERM_min/PERM_max`、`miuo/miuw`、`wct_break_thr`、`sl_years`、
+    `wcut_fixed_cols`（仅 WLW 版）、`caseRoot/caseName`。
+* **[B] 可直接沿用论文值**：`gamma_relax/gamma_decay`、`fit_tol`、`swing_hi/swing_boost`、
+  `e_bt_tol/e_wc_tol`、`w_bt`、`beta_weight`、`eps_tau/eps_f/eps_df`、`jump_back/jump_fwd`、
+  `chi_min/chi_max`、`sw_front_min`、`alpha`、`max_vary`、`decay_times`、`sw_decay`、
+  `mis_tol` 以及各布尔开关（两个已发表算例均未改动）。
+* **[C] 可沿用，但网格尺度或快照间隔差得多时按比例改**：`sw_end_cells`、`sw_end_frac`、
+  `sw_seg_maxlen`、`sln_expand_nb`。
 
 **需要准备的输入**（详见 §5 与 [`docs/input_data.md`](docs/input_data.md)）：
 

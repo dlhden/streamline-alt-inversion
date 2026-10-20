@@ -1,5 +1,46 @@
 # Changelog
 
+## v1.1.1 — 2026-10-20
+
+**Parameter documentation, and one value that did not match the manuscript.**
+
+Source changes
+
+* **`gamma_relax` corrected from `0.2` to `1`.** The manuscript (Table 7 and
+  §4.3) reports the initial relaxation factor as $\gamma^{(0)}=1$ with the decay
+  $\gamma^{(n)}=\gamma^{(0)}\times0.9^{\,n-1}$, and the published results were
+  produced with `1`. The value shipped in v1.1.0 was a stale one carried over
+  from an earlier draft of the codes and would not reproduce them. No other
+  parameter value changed.
+* New switch **`df_obs_mode`** (`'two_sample'` by default, `'stage'` optional)
+  for Eq. (35). `'two_sample'` is the window used in the published runs,
+  `[t_b−Δt_s, t_b+Δt_s]`; `'stage'` reads `[t_b, t_e]`, up to the first time the
+  derivative of the observed water cut falls below `eps_df`. The default branch
+  is byte-identical to the previous behaviour.
+* `kappa_w` and `df_obs_mode` are documented as a **calibrated pair**: the
+  working point is case-specific (WLW: `0.5` + two-sample window; main case:
+  `1.5` + `[t_b,t_e]`), while the working *behaviour* is not (both reach a median
+  `Δf_pre/Δf_obs` of ≈0.95–0.98 with ≈50 % of the producers degenerated and a
+  median subset of 3 streamlines). κ enters as a monotone power, so it changes
+  the subset length but not the ranking of the streamlines.
+
+Documentation
+
+* Both drivers now carry a header block listing **the six input data items**
+  (and which of them must be re-exported every iteration) and a **three-class
+  parameter map**: `[A]` must be calibrated on your own reservoir, `[B]` can be
+  copied from the paper, `[C]` can be copied but has to be rescaled with the grid
+  or the snapshot cadence. The same tags appear inline on every parameter line.
+* README §0 rewritten as the single entry point: §0.1 the data checklist
+  (file, source, re-exported or not), §0.2 the A-class parameters with the
+  reason they cannot be copied and how to set them, §0.3 the iteration procedure.
+* README §8 split into §8.1 (Class A, with values and setting procedure), §8.2
+  (Class B, with the paper values in a column) and §8.3 (Class C).
+* New README §8.1.1: how to run the `kappa_w`/`df_obs_mode` scan **without
+  re-running the simulator** — the driver is pure post-processing and
+  `perm_inversion_summary.txt` already contains `N_cand`, `M_star`, `df_line`,
+  `df_obs`, so the criterion of Table 5 is a few lines of arithmetic per run.
+
 ## v1.1.0 — 2026-10-12
 
 **Algorithms updated to the version that produced the results in the manuscript**

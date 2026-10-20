@@ -31,6 +31,34 @@ function main_SL_inversion_WLW()
 
 % 用法：第 1 轮 iter_index = 1，之后每轮 +1。输出路径与输入相同时会自动
 %   备份输入文件为 <name>.bak_时间戳。
+%
+% 需要准备的数据（6 项，除第 1、2 项外每轮都要重新导出）
+% -------------------------------------------------------------------------
+%   1) PERM_iter.GRDECL   当前渗透率场（PERMX/PERMY/PERMZ/NTG + 网格几何），Petrel 导出，仅第 0 轮
+%   2) SW_iter.GRDECL     当前初始含水饱和度场（SWAT/NTG），建模初始条件产出，仅第 0 轮
+%   3) <caseName>.SLNSPEC + .SLN0001 ...   本轮模拟的流线（模拟器打开流线输出），每轮
+%   4) wcut               模拟块（与本轮算例同名）+ 实测块（含 Observed），每轮
+%   5) swat_mismatch       逐井逐日的 实测-模拟 含水率，每轮（可由第 4 项生成）
+%   6) Krw.xlsx            Sw/krw/kro 相渗表，仅供读取
+%
+% 参数分三类（完整说明见 README §8）
+% -------------------------------------------------------------------------
+% [A] 必须按自己的油藏标定，论文值属于两个已发表算例，不能照搬：
+%       TOF_times（1500=C2 / 20000=WLW，差 13 倍）、SW_min/SW_max、
+%       PERM_min/PERM_max、miuo/miuw、wct_break_thr、
+%       kappa_w + df_obs_mode（成对标定：WLW 最优点 0.5 + 两步窗口，
+%       主案例最优点 1.5 + [t_b,t_e]；见 README §8.1.1 的扫描方法）
+%       sl_years、wcut_fixed_cols（仅 WLW 版）、caseRoot/caseName
+% [B] 可直接沿用论文值（两个油藏、1006 与约 1000 口井均未改动）：
+%       gamma_relax=1, gamma_decay=0.9, fit_tol=0.20, swing_hi=0.40,
+%       swing_boost=1.5, e_bt_tol=0.10, e_wc_tol=0.15, w_bt=0.5,
+%       beta_weight=0.5, eps_tau=1e-3, eps_f=1e-4, eps_df=0.01,
+%       jump_back/jump_fwd=1, chi_min/chi_max=0.5/2.0, sw_front_min=0.05,
+%       alpha=1, max_vary=1, decay_times=3, sw_decay=0.9, mis_tol=0.05,
+%       dedup_cells/normalize_cnt/soft_clip=true,
+%       sw_write_mode="segment", sw_seg_weight="end_boost", sw_dedup_seg=false
+% [C] 可沿用，但网格尺度或快照间隔差得多时须按比例改：
+%       sw_end_cells=5, sw_end_frac=0.5, sw_seg_maxlen=150, sln_expand_nb=2
 % =========================================================================
 
 %% ------------------------- 路径设置（EDIT THIS BLOCK）-------------------
@@ -59,8 +87,10 @@ wcut_fixed_cols = [7 12 310 318 323 621];
 % --------------------------- 共用轮次参数 -------------------------------
 iter_index  = 1;      % 当前反演轮次（第 1 轮填 1，之后每轮 +1）
 
+% 参数分类：[A] 必须按本油藏标定（论文值属于两个已发表算例，不可照搬）
+%           [B] 可直接沿用论文值   [C] 沿用后按网格尺度/快照间隔调整
 % --------------------- 渗透率反演参数（v2 算法）-------------------------
-gamma_relax = 0.2;    % Eq.(39) 松弛因子 gamma，控制修正步长
+gamma_relax = 1;    % Eq.(39) 松弛因子 gamma，控制修正步长
 gamma_decay = 0.9;    % 逐轮衰减因子：gamma_eff = gamma_relax * gamma_decay^(iter_index-1)
 fit_tol     = 0.20;   % 井冻结门限：含水率平均相对误差 < fit_tol 的井本轮不修正
 e_bt_tol    = 0.10;   % 见水时间失配死区：|E_bt| < e_bt_tol 的井不做修正
@@ -69,7 +99,8 @@ e_wc_tol    = 0.15;   % v2 含水率水平失配死区：|E_wc| < e_wc_tol 视�
 swing_hi    = 0.40;   % v2 临界井上界：wc_err ∈ [fit_tol, swing_hi] 的井为临界井
 swing_boost = 1.5;    % v2 临界井步长放大倍数（直接面向 <20% 达标指标）
 beta_weight = 0.5;    % Eq.(33) 组合贡献权重 beta（TOF 与饱和度贡献之间）
-kappa_w     = 0.5;    % Eq.(30) 流量份额调和指数 kappa（1=严格流量加权；0.5 经实算标定）
+kappa_w     = 0.5;    % [A] Eq.(30) 流量份额调和指数 kappa（表 5：WLW 标定最优 0.5，主案例自身最优 1.5）
+df_obs_mode = 'two_sample';  % [A] Eq.(35) 实测增量窗口：'two_sample'（前后各 1 步，论文默认）| 'stage'（[t_b,t_e]）
 eps_tau     = 1e-3;   % Eq.(31-32) TOF 正则化常数（与 TOF 同单位）
 eps_f       = 1e-4;   % Eq.(36) 含水率增量正则化常数
 eps_df      = 0.01;   % 含水率导数阈值（见水识别 + 上升阶段结束判据）
@@ -77,8 +108,8 @@ jump_back   = 1;      % Eq.(35) 瞬时跳变窗口：见水前 jump_back 个采�
 jump_fwd    = 1;      % Eq.(35) 瞬时跳变窗口：见水后 jump_fwd 个采样点
 chi_min     = 0.5;    % Eq.(39) 流线乘子下限
 chi_max     = 2.0;    % Eq.(39) 流线乘子上限
-PERM_min    = 0.01;   % 渗透率地质下限 (mD)
-PERM_max    = 800;    % 渗透率地质上限 (mD)
+PERM_min    = 0.01;   % [A] 渗透率地质下限 (mD)
+PERM_max    = 800;    % [A] 渗透率地质上限 (mD)
 sw_front_min= 0.05;   % 判定流线存在明显水线前缘的最小 SW 梯度
 make_plots  = false;  % 是否绘制单井诊断图
 
@@ -86,13 +117,13 @@ make_plots  = false;  % 是否绘制单井诊断图
 % 修复逻辑两版完全一致；标注 [标定] 的参数可按油藏分别调整。
 fix_etot_combine   = true;  % [修复②] 组合驱动改"先加权求和再 tanh"，避免同号信号饱和后完全抵消
 fix_break_fallback = true;  % [修复③] 见水识别回退：导数阈值法无解时改用"首超阈值时刻"
-wct_break_thr      = 0.02;  % [修复③][标定] 见水回退阈值：含水率首次超过该值即视为见水
-sln_expand_nb      = 2;     % [修复①][标定] 冻结快照无候选流线时向前后各扩展的快照数（0=关闭退回原行为）
+wct_break_thr      = 0.02;  % [修复③][A] 见水回退阈值：含水率首次超过该值即视为见水
+sln_expand_nb      = 2;     % [修复①][C] 冻结快照无候选流线时向前后各扩展的快照数（0=关闭退回原行为）
 
 % --------------------- 饱和度反演参数（v2 算法）-------------------------
-miuo = 2.8;
-miuw = 1;
-sl_years = 6;
+miuo = 2.8;   % [A] 原油粘度 (mPa·s)
+miuw = 1;     % [A] 水粘度 (mPa·s)
+sl_years = 6;   % [A] 单帧流线快照的有效期（年），按快照间隔与资料跨度取
 alpha = 1;
 % ================== !!! TOF_times 必须按案例标定，不能照搬 !!! ==================
 % 流线 TOF 是无量纲量，本代码用 SW_TOF = TOF * TOF_times（近似为「天」）把它换算
@@ -133,9 +164,9 @@ soft_clip     = true; % v2 tanh 软截断（false 退回 max/min 硬截断）
 %       sw_end_cells 个网格必获修正；段长上限防极长流线一次改太多网格。
 sw_write_mode = "segment";  % "single"=原行为(单点 GLO_CELL(k_i)) | "segment"=k_i→井端分段写入
 sw_seg_weight = "end_boost";% 段内权重："uniform" 段内均匀 | "end_boost" 均匀 + 井端加强（推荐）
-sw_end_cells  = 5;          % [标定] 井端强制参与的网格数 b（建议 3~5）
-sw_end_frac   = 0.5;        % [标定] 分配给井端 b 个网格的修正量占比（其余均匀铺满整段）
-sw_seg_maxlen = 150;        % [标定] 分段长度上限（0=不限制）；超限时向井端收缩
+sw_end_cells  = 5;          % [C] 井端强制参与的网格数 b（建议 3~5）
+sw_end_frac   = 0.5;        % [C] 分配给井端 b 个网格的修正量占比（其余均匀铺满整段）
+sw_seg_maxlen = 150;        % [C] 分段长度上限（0=不限制）；超限时向井端收缩
 sw_dedup_seg  = false;      % 分段模式是否保留"同井同网格只计一次"去重（默认 false，理由见下）
 %       说明：分段模式下若沿用逐格去重，井端网格只会被该井第一条流线写入一次、其余全部
 %             被丢弃 -> 修复失效。热点网格仍由 SWAT_cnt + sqrt 归一化 + tanh 软截断控制；
@@ -601,8 +632,8 @@ for i = 1:size(data_observed,2)
         end
         idx_behind = fidx;                 % 前缘后方（波及侧）-> 假想推进到井筒后的井端状态
         idx_ahead  = fidx + 1;             % 前缘前方（未波及侧）-> 当前井端背景状态
-        % Eq.(30)：a_m 经调和指数 kappa_w 折减（kappa=1 为严格流量加权，
-        % kappa=0.5 保留流量排序同时避免增量被份额过度摊薄）
+        % Eq.(30)：a_m 经调和指数 kappa_w 折减（kappa=1 为严格流量加权；
+        % kappa=0.5 由表 5 标定，保留流量排序同时避免增量被份额过度摊薄）
         df_line(m) = a_m(m)^kappa_w * max(0, fw(idx_behind) - fw(idx_ahead));
     end
 
@@ -620,12 +651,20 @@ for i = 1:size(data_observed,2)
     % ---- Eq.(34) 预测突破后含水率增量（流线法求和） ----
     df_line_p = sum(df_line);
 
-    % ---- Eq.(35) 实际突破后含水率增量（见水时刻的瞬时跳变） ----
-    % 与 Eq.(30) 的假想场景（单条流线前缘抵达井筒引起的含水率跳变）物理对齐：
-    % 取平滑实测曲线在见水时刻前后各一个采样点的差值，
-    % 避免导数阈值阶段定义把后续多流线陆续突破的累计上升也计入。
-    t0 = max(bo1 - jump_back, 1);
-    t1 = min(bo1 + jump_fwd,  nTime);
+    % ---- Eq.(35) 实际突破后含水率增量 ----
+    % two_sample（默认）：与 Eq.(30) 的假想场景（单条流线前缘抵达井筒引起的含水率跳变）
+    %   物理对齐，取平滑实测曲线在见水时刻前后各一个采样点的差值，
+    %   避免导数阈值阶段定义把后续多流线陆续突破的累计上升也计入。
+    % stage：[t_b, t_e]，t_e 为突破后实测含水率导数首次低于 eps_df 的时刻（表 5 标定口径之一）。
+    if strcmpi(df_obs_mode, 'stage')
+        t0  = bo1;
+        seg = min(bo1 + 1, nTime):nTime;
+        k_e = find(df_observed_s(seg,i) < eps_df, 1, 'first');
+        if isempty(k_e), t1 = nTime; else, t1 = seg(k_e); end
+    else
+        t0 = max(bo1 - jump_back, 1);
+        t1 = min(bo1 + jump_fwd,  nTime);
+    end
     df_obs_p = max(ds_observed(t1,i) - ds_observed(t0,i), 0);
 
     % ---- Eq.(36) 有界因子 Lambda_f ----
