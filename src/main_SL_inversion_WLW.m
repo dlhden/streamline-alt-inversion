@@ -21,6 +21,41 @@ function main_SL_inversion_WLW()
 % 每轮只需一次 Intersect；两类修正共用 iter_index 轮次计数，各自保留独立衰减
 % 因子 gamma_decay（渗透率）与 sw_decay（饱和度）。
 %
+% First-order decoupling (1102, on by default)
+% -------------------------------------------------------------------------
+% The two branches form a 2x2 block system whose off-diagonal terms are the
+% breakthrough-time sensitivity to initial saturation, b = d(t_b)/dS_w0, and
+% the water-cut sensitivity to permeability, c = df_w/dK. Evaluating both
+% branches from one simulation is a block-Jacobi step: the permeability branch
+% is charged with b*dS_w0, i.e. it pays again for a saturation error that the
+% saturation branch has already settled in the same iteration.
+%
+% This driver removes that first-order term without any extra simulator run.
+% After the saturation update it evaluates the breakthrough time twice with the
+% same MOC engine on the frozen streamlines -- once with the new S_w0 field and
+% once with the old one -- and takes the difference
+%       dt_b = t_b(S_w0_new) - t_b(S_w0_old)
+% The engine evaluates the two times in days; the difference is then converted
+% to the sampling interval of wcut, which is the unit in which t_sim, t_obs and
+% E_bt are reported throughout the driver.
+% The engine's own approximation error cancels in the difference, so the
+% permeability branch is driven by the compensated mismatch
+%       E_p^comp = (t_b^sim - dt_b) - t_b^obs
+% All quantities needed (TOF / TotalTOF of the SLN file, the fw table, both
+% saturation fields) are already in memory. The cross contamination drops from
+% O(eps) to O(eps^2); what remains is the second-order migration of the velocity
+% field caused by the mobility change, which the next forward run re-evaluates.
+%
+% Diagnostics, written next to PERM_outpath, no extra run:
+%   decouple_diagnostic.txt              per well: E_bt before/after compensation,
+%                                        dt_b, entanglement ratio |dt_b|/|E_bt|
+%   decouple_entanglement_history.txt    one statistics row appended per round
+%   decouple_entanglement.png            median / mean / max vs iteration
+%
+% Set decouple_enable = false to fall back to the uncompensated block-Jacobi
+% behaviour (identical to the 1020 drivers); the compensation parameters below
+% then have no effect.
+%
 % 本文件与另一案例驱动（main_SL_inversion_C2.m）的差异只有两处：
 %   (1) 配置块：读取路径 + TOF_times；
 %   (2) 第二部分（wcut 读取）——本案例的 wcut 为「单块」导出（模拟部分 +
@@ -59,6 +94,11 @@ function main_SL_inversion_WLW()
 %       alpha=1, max_vary=1, decay_times=3, sw_decay=0.9, mis_tol=0.05,
 %       dedup_cells/normalize_cnt/soft_clip=true,
 %       sw_write_mode="segment", sw_seg_weight="end_boost", sw_dedup_seg=false
+% [B] 解耦参数（1102 新增，两案例同值；不改算法结构，只影响补偿强度）：
+%       decouple_enable=true, eps_fwp=1e-4, dtb_cap_frac=0.5, decouple_plot=true
+%       eps_fwp 是 f_w'(S) 的下限，只在低饱和度段防除零；dtb_cap_frac 限制
+%       单井补偿量 |dt_b| <= dtb_cap_frac * max(t_b^sim, 1)，防止首轮过冲；
+%       若某案例首轮出现突破时间被"补偿过头"（E_bt 符号翻转），先调小它。
 % [C] 可沿用，但网格尺度或快照间隔差得多时须按比例改：
 %       sw_end_cells=5, sw_end_frac=0.5, sw_seg_maxlen=150, sln_expand_nb=2
 % =========================================================================
@@ -128,6 +168,20 @@ PERM_min    = 0.01;   % [A] 渗透率地质下限 (mD)
 PERM_max    = 800;    % [A] 渗透率地质上限 (mD)
 sw_front_min= 0.05;   % 判定流线存在明显水线前缘的最小 SW 梯度
 make_plots  = false;  % 是否绘制单井诊断图
+
+% ------------- [一阶解耦] MOC 突破时间补偿参数（C2/WLW 同步，1102 新增）-------------
+% 背景：联立残差方程的 2x2 块系统中交叉项 d(t_b)/dS_w0 非零，Sw 支路本轮的修正
+%       会改变突破时间，若 K 支路仍用原始失配，渗透率将为刚修掉的饱和度误差
+%       "还债"（块 Jacobi 交叉污染）。补偿：Sw 更新后，在冻结流线上用同一 MOC
+%       引擎对新旧 Sw0 场各求一次突破时间并取差 dt_b（引擎近似误差作差抵消），
+%       K 支路失配改为 E_p^comp = (t_b^sim - dt_b) - t_b^obs。
+%       全部数据当轮已在内存（SLN 的 TOF/TotalTOF、fw_data、SWAT 新旧场），
+%       不增加 Intersect 调用；残余耦合仅为速度场迁移引起的 O(DeltaS^2) 项，
+%       故为一阶解耦（first-order decoupling）。
+decouple_enable = true;   % [解耦] 补偿开关（false 退回无补偿的块 Jacobi 行为）
+eps_fwp       = 1e-4;     % [解耦] f_w'(S) 下限，防止低饱和度段特征速度除零
+dtb_cap_frac  = 0.5;      % [解耦] 单井补偿量上限：|dt_b| <= 该比例 × max(t_sim_raw,1)，防首轮过冲
+decouple_plot = true;     % [解耦] 每轮结束后追加纠缠度统计并刷新 decouple_entanglement.png
 
 % ------------- [同步修复] "大误差井零修正"三处结构性缺陷开关（C2/WLW 同步）----
 % 修复逻辑两版完全一致；标注 [标定] 的参数可按油藏分别调整。
@@ -563,315 +617,9 @@ for i = 1:numel(miswid2slnwid)
 end
 
 % =========================================================================
-% 第五部分：渗透率修正（SPE_0905 论文方法 + v2 组合驱动与临界井加权）
-% =========================================================================
-disp('开始渗透率修正计算')
-gamma_eff = max(gamma_relax * gamma_decay^(iter_index-1), gamma_min);   % 逐轮衰减的松弛因子（含下限）
-fprintf('当前轮次 iter_index=%d，gamma_eff=%.4f\n', iter_index, gamma_eff);
-dlnK_num = zeros(gridnum,1);   % Eq.(40) 分子：sum( omega * ln(chi) )
-dlnK_den = zeros(gridnum,1);   % Eq.(40) 分母：sum( omega )
-
-% 汇总日志表
-log_well   = {};
-log_tbs    = []; log_tbo = []; log_Ebt = [];
-log_Ncand  = []; log_Mstar = [];
-log_dfline = []; log_dfobs = []; log_Lam = [];
-log_wcerr  = []; log_Ewc = []; log_Etot = [];
-
-wbar = waitbar(0, '渗透率修正中...');
-for i = 1:size(data_observed,2)
-    ci = obswid2casewid(i);
-    wi = obswid2slnwid(i);
-    if ci <= 0 || wi <= 0
-        waitbar(i/size(data_observed,2),wbar); continue;
-    end
-    % ---- 井级冻结：含水率误差已达标的井本轮不再修正 ----
-    if ~isnan(wc_err(i)) && wc_err(i) < fit_tol
-        fprintf('井 %s 已达标（误差 %.2f%% < %.0f%%），本轮冻结\n', ...
-            raw_w_o{i}, 100*wc_err(i), 100*fit_tol);
-        waitbar(i/size(data_observed,2),wbar); continue;
-    end
-
-    bo1 = break_time_observed{i}(1);
-    bc1 = break_time_case{ci}(1);
-    if isnan(bo1) && isnan(bc1)
-        waitbar(i/size(data_observed,2),wbar); continue;   % 两侧均未见水
-    end
-    if isnan(bc1), bc1 = nTime; end
-    if isnan(bo1), bo1 = nTime; end
-
-    st_obs  = start_time_observed(i);
-    st_case = start_time_case(ci);
-    if isnan(st_obs),  st_obs  = 1; end
-    if isnan(st_case), st_case = 1; end
-
-    % ---- Eq.(27) 归一化见水时间失配（时间自各自投产时刻起算） ----
-    % tanh 软限幅：E_bt 经压缩后天然有界 (-1,1)，避免小 t_obs 井
-    % （实测见水极早的井原始 E_bt 可达 9~15）每轮触发满幅修正。
-    t_sim = bc1 - st_case;
-    t_obs = bo1 - st_obs;
-    E_bt_raw = (t_sim - t_obs) / max(t_obs,1);
-    E_bt     = tanh(E_bt_raw);
-
-    % ---- v2 含水率水平失配驱动（带符号，tanh 有界）----
-    % E_wc_raw > 0：模拟含水率整体偏高 → 需降低供水流线渗透率；
-    % E_wc_raw < 0：模拟含水率整体偏低 → 需提高供水流线渗透率。
-    E_wc_raw = wc_err_signed(i);
-    if isnan(E_wc_raw), E_wc_raw = 0; end
-
-    % 组合驱动：见水时间与含水率水平两信号加权；相互矛盾时自动抵消。
-    % 死区：两信号均在各自死区内（或抵消后很小）时不做修正。
-    % [修复②] 原式把两信号各自 tanh 到 (-1,1) 再相减：当两项对 K 的作用方向相反
-    % （即输入同号）且都较大时，E_bt 与 tanh(E_wc) 双双饱和到 ±1，相减恒趋近 0
-    % ⇒ 失配越极端，越必然被下面的"信号抵消"判据跳过（与设计意图相反）。
-    % 修复：先加权求和再统一 tanh，只在两信号量级真正相当时才抵消；符号约定一致。
-    if fix_etot_combine
-        E_tot = tanh(w_bt * E_bt_raw - (1 - w_bt) * E_wc_raw);
-    else
-        E_tot = w_bt * E_bt - (1 - w_bt) * tanh(E_wc_raw);
-    end
-    if abs(E_bt_raw) < e_bt_tol && abs(E_wc_raw) < e_wc_tol
-        waitbar(i/size(data_observed,2),wbar); continue;
-    end
-    if abs(E_tot) < 0.05
-        waitbar(i/size(data_observed,2),wbar); continue;   % 信号抵消，本轮不动
-    end
-
-    % ---- Eq.(28) 参考时刻 t_cur = min(t_sim_date, t_obs_date) ----
-    t_cur_idx = min(bc1, bo1);
-    t_misdate = mis_datetime_wc(t_cur_idx);
-    ss_i = find(sln_datetime <= t_misdate, 1, 'last');   % 冻结单一快照
-    if isempty(ss_i), ss_i = 1; end
-
-    % ---- Eq.(29) 候选流线集：该快照中终止于生产井 wi 的流线 ----
-    sln_t   = sln_list{ss_i};
-    sln_END = sln_endlist{ss_i};
-    linked_sln = sln_t(sln_END == wi);
-    N_cand = numel(linked_sln);
-
-    % [修复①] 冻结快照内无候选流线时，在时间窗内扩展快照（前后各 sln_expand_nb 个）。
-    % 原实现只查 1 个快照，而早期快照"有流线的井"极少（WLW 1997-04 仅 17 口、
-    % 2000-04 已 321 口），大量井因"该快照内没有以它为终点的流线"被静默跳过 ——
-    % 并非"不需修正"，而是"没找到可改的对象"。扩展后仍为空才跳过。
-    if N_cand == 0 && sln_expand_nb > 0
-        ss_win = max(1, ss_i - sln_expand_nb) : min(SLNN, ss_i + sln_expand_nb);
-        sln_t   = vertcat(sln_list{ss_win});
-        sln_END = vertcat(sln_endlist{ss_win});
-        linked_sln = sln_t(sln_END == wi);
-        N_cand = numel(linked_sln);
-    end
-    if N_cand == 0
-        waitbar(i/size(data_observed,2),wbar); continue;
-    end
-
-    % ---- Eq.(30) 单条流线假想突破含水率增量 & Eq.(29) 总 TOF ----
-    T_tot   = zeros(N_cand,1);
-    q_m     = zeros(N_cand,1);
-    for m = 1:N_cand
-        T_tot(m) = max(linked_sln(m).TotalTOF, eps_tau);
-        % 流线携液量取井筒端（末节点）总流量 FLORES
-        if isfield(linked_sln,'FR') && ~isempty(linked_sln(m).FR)
-            q_m(m) = max(linked_sln(m).FR(end), 0);
-        else
-            q_m(m) = 0;
-        end
-    end
-    if sum(q_m) > 0
-        a_m = q_m / sum(q_m);            % Eq.(29) 流量份额 a_{m,p}
-    else
-        a_m = ones(N_cand,1) / N_cand;   % 流量缺失时退化为均分
-    end
-
-    df_line = zeros(N_cand,1);
-    for m = 1:N_cand
-        SW = linked_sln(m).SW;
-        if isfield(linked_sln,'FW') && ~isempty(linked_sln(m).FW) ...
-                && sum(linked_sln(m).FR) > 0
-            fw = linked_sln(m).FW ./ max(linked_sln(m).FR, eps);  % 沿流线含水率 f_w(s)
-        else
-            fw = SW;                       % 无流量场时用 SW 代替 f_w
-        end
-        if numel(SW) < 3
-            continue;
-        end
-        % 水线前缘位置：SW 梯度最大处；上游(靠注水井)为波及侧，下游为未波及侧
-        dSW = diff(SW);
-        [maxdSW, fidx] = max(dSW);
-        if maxdSW < sw_front_min
-            continue;                      % 无明显前缘（已突破或未启动），增量取 0
-        end
-        idx_behind = fidx;                 % 前缘后方（波及侧）-> 假想推进到井筒后的井端状态
-        idx_ahead  = fidx + 1;             % 前缘前方（未波及侧）-> 当前井端背景状态
-        % Eq.(30)：a_m 经调和指数 kappa_w 折减（kappa=1 为严格流量加权；
-        % kappa=0.5 由表 5 标定，保留流量排序同时避免增量被份额过度摊薄）
-        df_line(m) = a_m(m)^kappa_w * max(0, fw(idx_behind) - fw(idx_ahead));
-    end
-
-    % ---- Eq.(31-33) 归一化贡献与组合贡献 ----
-    invT  = 1 ./ (T_tot + eps_tau);
-    R_T   = invT / sum(invT);                                   % Eq.(31)
-    s_tmp = df_line ./ (T_tot + eps_tau);
-    if sum(s_tmp) > 0
-        R_S = s_tmp / sum(s_tmp);                               % Eq.(32)
-    else
-        R_S = zeros(N_cand,1);
-    end
-    C_m = beta_weight * R_T + (1 - beta_weight) * R_S;          % Eq.(33)
-
-    % ---- Eq.(34) 预测突破后含水率增量（流线法求和） ----
-    df_line_p = sum(df_line);
-
-    % ---- Eq.(35) 实际突破后含水率增量 ----
-    % two_sample（默认）：与 Eq.(30) 的假想场景（单条流线前缘抵达井筒引起的含水率跳变）
-    %   物理对齐，取平滑实测曲线在见水时刻前后各一个采样点的差值，
-    %   避免导数阈值阶段定义把后续多流线陆续突破的累计上升也计入。
-    % stage：[t_b, t_e]，t_e 为突破后实测含水率导数首次低于 eps_df 的时刻（表 5 标定口径之一）。
-    if strcmpi(df_obs_mode, 'stage')
-        t0  = bo1;
-        seg = min(bo1 + 1, nTime):nTime;
-        k_e = find(df_observed_s(seg,i) < eps_df, 1, 'first');
-        if isempty(k_e), t1 = nTime; else, t1 = seg(k_e); end
-    else
-        t0 = max(bo1 - jump_back, 1);
-        t1 = min(bo1 + jump_fwd,  nTime);
-    end
-    df_obs_p = max(ds_observed(t1,i) - ds_observed(t0,i), 0);
-
-    % ---- Eq.(36) 有界因子 Lambda_f ----
-    Lam_f = min(1, abs(df_line_p - df_obs_p) / (abs(df_obs_p) + eps_f));
-
-    % ---- Eq.(37) 最小流线子集：按 C 降序累加 df_line 至 >= df_obs ----
-    [~, order] = sort(C_m, 'descend');
-    cum_df = cumsum(df_line(order));
-    M_star = find(cum_df >= df_obs_p, 1, 'first');
-    if isempty(M_star), M_star = N_cand; end
-    sel = order(1:M_star);
-
-    % ---- Eq.(38-39) 流线乘子 chi = exp(gamma*E_tot*Lambda_f*C_bar) ----
-    % v2 临界井加权：误差在 [fit_tol, swing_hi] 的井最接近 20% 达标线，
-    % 放大步长 swing_boost 倍，优先把它们推过阈值。
-    gamma_w = gamma_eff;
-    if ~isnan(wc_err(i)) && wc_err(i) >= fit_tol && wc_err(i) < swing_hi
-        gamma_w = gamma_eff * swing_boost;
-    end
-    C_bar = C_m(sel) / max(C_m(sel));                           % Eq.(38)
-    ln_chi = gamma_w * E_tot * Lam_f * C_bar;                   % Eq.(39)，组合驱动 E_tot
-    ln_chi = min(max(ln_chi, log(chi_min)), log(chi_max));
-
-    % ---- Eq.(40) 按 TOF 权重投影到网格 ----
-    for r = 1:M_star
-        m = sel(r);
-        sln_k = linked_sln(m);
-        cells = sln_k.GLO_CELL;
-        tof   = sln_k.TOF;
-        if numel(tof) < 2 || sln_k.TotalTOF <= 0
-            continue;
-        end
-        dtof = diff(tof);
-        dtof(dtof < 0) = 0;
-        % CELL/SW/FLORES 为段数据（每流线 n_node-1 个），与 diff(TOF) 等长对齐
-        c_cells = cells;
-        valid = c_cells >= 1 & c_cells <= gridnum & isfinite(dtof);
-        c_cells = c_cells(valid);
-        dtof = dtof(valid);
-        if isempty(c_cells)
-            continue;
-        end
-        w_cell = accumarray(c_cells, dtof, [gridnum,1]);
-        omega  = w_cell / sln_k.TotalTOF;      % TOF 分数权重 omega_{m,p,k}
-        touched = omega > 0;
-        dlnK_num(touched) = dlnK_num(touched) + omega(touched) * ln_chi(r);
-        dlnK_den(touched) = dlnK_den(touched) + omega(touched);
-    end
-
-    % ---- 汇总日志 ----
-    log_well{end+1,1} = raw_w_o{i};
-    log_tbs(end+1,1)  = t_sim;   log_tbo(end+1,1)  = t_obs;
-    log_Ebt(end+1,1)  = E_bt_raw;
-    log_Ncand(end+1,1)= N_cand;  log_Mstar(end+1,1)= M_star;
-    log_dfline(end+1,1)= df_line_p; log_dfobs(end+1,1)= df_obs_p;
-    log_Lam(end+1,1)  = Lam_f;
-    log_wcerr(end+1,1)= wc_err(i);
-    log_Ewc(end+1,1)  = E_wc_raw;
-    log_Etot(end+1,1) = E_tot;
-
-    waitbar(i/size(data_observed,2),wbar)
-end
-close(wbar)
-
-% ---- Eq.(40-41) 网格修正量与渗透率更新 ----
-dlnK = zeros(gridnum,1);
-mask = dlnK_den > 0;
-dlnK(mask) = dlnK_num(mask) ./ dlnK_den(mask);
-
-nExtra = numel(PERMXnumarray) - gridnum;      % LGR 网格不修正
-if nExtra > 0
-    dlnK_full = [dlnK; zeros(nExtra,1)];
-else
-    dlnK_full = dlnK;
-end
-
-PERMXarraynew = PERMXnumarray .* exp(dlnK_full);
-PERMXarraynew = min(PERMXarraynew, PERM_max);
-PERMXarraynew = max(PERMXarraynew, PERM_min);
-PERMYarraynew = PERMYnumarray .* exp(dlnK_full);
-PERMYarraynew = min(PERMYarraynew, PERM_max);
-PERMYarraynew = max(PERMYarraynew, PERM_min);
-
-grdecl_perm.PERMX = PERMXarraynew(:);
-grdecl_perm.PERMY = PERMYarraynew(:);
-if has_PERMZ
-    PERMZarraynew = PERMZnumarray .* exp(dlnK_full);
-    PERMZarraynew = min(PERMZarraynew, PERM_max);
-    PERMZarraynew = max(PERMZarraynew, PERM_min);
-    grdecl_perm.PERMZ = PERMZarraynew(:);
-end
-
-% 输出前备份输入文件（若输出路径与输入相同）
-if PERM_path == PERM_outpath
-    bak = PERM_path + ".bak_" + string(datetime('now','Format','yyyyMMdd_HHmmss'));
-    copyfile(PERM_path, bak);
-    disp("已备份原渗透率文件到 " + bak);
-end
-writeGRDECL(grdecl_perm, PERM_outpath);
-disp("更新后的渗透率场已写出: " + PERM_outpath);
-
-% ------------------------- 写出渗透率汇总日志 ----------------------------
-logpath = fullfile(fileparts(PERM_outpath), 'perm_inversion_summary.txt');
-fid = fopen(logpath,'w');
-fprintf(fid,'well\tt_sim\tt_obs\tE_bt\tE_bt_soft\tE_wc\tE_tot\tN_cand\tM_star\tdf_line\tdf_obs\tLambda_f\twc_err\n');
-for i = 1:numel(log_well)
-    fprintf(fid,'%s\t%.1f\t%.1f\t%.4f\t%.4f\t%.4f\t%.4f\t%d\t%d\t%.4f\t%.4f\t%.4f\t%.4f\n', ...
-        log_well{i}, log_tbs(i), log_tbo(i), log_Ebt(i), tanh(log_Ebt(i)), log_Ewc(i), log_Etot(i), ...
-        log_Ncand(i), log_Mstar(i), log_dfline(i), log_dfobs(i), log_Lam(i), log_wcerr(i));
-end
-fclose(fid);
-disp("渗透率汇总日志已写出: " + logpath);
-
-fprintf('渗透率反演：共处理 %d 口井，修正网格 %d 个（占 %.2f%%）\n', ...
-    numel(log_well), nnz(mask), 100*nnz(mask)/gridnum);
-
-% ------------------------- 可选诊断图 ------------------------------------
-if make_plots
-    for i = 1:min(5,size(data_observed,2))
-        ci = obswid2casewid(i);
-        if ci <= 0, continue; end
-        figure
-        scatter(mis_datetime_wc,data_observed(:,i)); hold on
-        plot(mis_datetime_wc,data_case(:,ci))
-        plot(mis_datetime_wc,df_case(:,ci))
-        if ~isnan(break_time_observed{i})
-            scatter(mis_datetime_wc(break_time_observed{i}),data_observed(break_time_observed{i},i),'r*')
-        end
-        if ~isnan(break_time_case{ci})
-            scatter(mis_datetime_wc(break_time_case{ci}),data_case(break_time_case{ci},ci),'b*')
-        end
-        title(raw_w_o{i})
-    end
-end
-
-% =========================================================================
-% 第六部分：含水饱和度修正（v2：热点抑制 + tanh 软截断）
+% 第五部分：含水饱和度修正（v2：热点抑制 + tanh 软截断）
+%   [1102] 本部分先于渗透率支路执行：更新后的 SWATarraynew 供第六部分
+%   MOC 突破时间补偿（一阶解耦）使用
 % =========================================================================
 disp('开始含水饱和度修正计算')
 
@@ -1079,7 +827,423 @@ end
 writeGRDECL(grdecl_sw, SW_writepath);
 disp("更新后的饱和度场已写出: " + SW_writepath);
 
-fprintf('合并反演完成：PERM -> %s，SWAT -> %s\n', PERM_outpath, SW_writepath);
+% =========================================================================
+% 第六部分：渗透率修正（SPE_0905 论文方法 + v2 组合驱动与临界井加权
+%   + [1102] MOC 突破时间补偿一阶解耦）
+% =========================================================================
+disp('开始渗透率修正计算')
+
+% [一阶解耦] 预计算：f_w'(S) 数值导数表（MOC 特征速度）与 wcut 采样间隔（天），
+% 供循环内 MOC 突破时间补偿使用；不新增任何模拟调用。
+fwder   = gradient(fw_data(:,2), fw_data(:,1));
+dt_samp = median(days(diff(mis_datetime_wc)));
+gamma_eff = max(gamma_relax * gamma_decay^(iter_index-1), gamma_min);   % 逐轮衰减的松弛因子（含下限）
+fprintf('当前轮次 iter_index=%d，gamma_eff=%.4f\n', iter_index, gamma_eff);
+dlnK_num = zeros(gridnum,1);   % Eq.(40) 分子：sum( omega * ln(chi) )
+dlnK_den = zeros(gridnum,1);   % Eq.(40) 分母：sum( omega )
+
+% 汇总日志表
+log_well   = {};
+log_tbs    = []; log_tbo = []; log_Ebt = [];
+log_Ncand  = []; log_Mstar = [];
+log_dfline = []; log_dfobs = []; log_Lam = [];
+log_wcerr  = []; log_Ewc = []; log_Etot = [];
+log_Ebt0   = []; log_dtb = [];   % [一阶解耦] 补偿前 E_bt 与 MOC 补偿量（诊断用）
+
+wbar = waitbar(0, '渗透率修正中...');
+for i = 1:size(data_observed,2)
+    ci = obswid2casewid(i);
+    wi = obswid2slnwid(i);
+    if ci <= 0 || wi <= 0
+        waitbar(i/size(data_observed,2),wbar); continue;
+    end
+    % ---- 井级冻结：含水率误差已达标的井本轮不再修正 ----
+    if ~isnan(wc_err(i)) && wc_err(i) < fit_tol
+        fprintf('井 %s 已达标（误差 %.2f%% < %.0f%%），本轮冻结\n', ...
+            raw_w_o{i}, 100*wc_err(i), 100*fit_tol);
+        waitbar(i/size(data_observed,2),wbar); continue;
+    end
+
+    bo1 = break_time_observed{i}(1);
+    bc1 = break_time_case{ci}(1);
+    if isnan(bo1) && isnan(bc1)
+        waitbar(i/size(data_observed,2),wbar); continue;   % 两侧均未见水
+    end
+    if isnan(bc1), bc1 = nTime; end
+    if isnan(bo1), bo1 = nTime; end
+
+    st_obs  = start_time_observed(i);
+    st_case = start_time_case(ci);
+    if isnan(st_obs),  st_obs  = 1; end
+    if isnan(st_case), st_case = 1; end
+    % ---- Eq.(28) 参考时刻 t_cur = min(t_sim_date, t_obs_date) ----
+    t_cur_idx = min(bc1, bo1);
+    t_misdate = mis_datetime_wc(t_cur_idx);
+    ss_i = find(sln_datetime <= t_misdate, 1, 'last');   % 冻结单一快照
+    if isempty(ss_i), ss_i = 1; end
+
+    % ---- Eq.(29) 候选流线集：该快照中终止于生产井 wi 的流线 ----
+    sln_t   = sln_list{ss_i};
+    sln_END = sln_endlist{ss_i};
+    linked_sln = sln_t(sln_END == wi);
+    N_cand = numel(linked_sln);
+
+    % [修复①] 冻结快照内无候选流线时，在时间窗内扩展快照（前后各 sln_expand_nb 个）。
+    % 原实现只查 1 个快照，而早期快照"有流线的井"极少（WLW 1997-04 仅 17 口、
+    % 2000-04 已 321 口），大量井因"该快照内没有以它为终点的流线"被静默跳过 ——
+    % 并非"不需修正"，而是"没找到可改的对象"。扩展后仍为空才跳过。
+    if N_cand == 0 && sln_expand_nb > 0
+        ss_win = max(1, ss_i - sln_expand_nb) : min(SLNN, ss_i + sln_expand_nb);
+        sln_t   = vertcat(sln_list{ss_win});
+        sln_END = vertcat(sln_endlist{ss_win});
+        linked_sln = sln_t(sln_END == wi);
+        N_cand = numel(linked_sln);
+    end
+    if N_cand == 0
+        waitbar(i/size(data_observed,2),wbar); continue;
+    end
+
+    % ---- Eq.(30) 单条流线假想突破含水率增量 & Eq.(29) 总 TOF ----
+    T_tot   = zeros(N_cand,1);
+    q_m     = zeros(N_cand,1);
+    for m = 1:N_cand
+        T_tot(m) = max(linked_sln(m).TotalTOF, eps_tau);
+        % 流线携液量取井筒端（末节点）总流量 FLORES
+        if isfield(linked_sln,'FR') && ~isempty(linked_sln(m).FR)
+            q_m(m) = max(linked_sln(m).FR(end), 0);
+        else
+            q_m(m) = 0;
+        end
+    end
+    if sum(q_m) > 0
+        a_m = q_m / sum(q_m);            % Eq.(29) 流量份额 a_{m,p}
+    else
+        a_m = ones(N_cand,1) / N_cand;   % 流量缺失时退化为均分
+    end
+    % ---- [一阶解耦] MOC 突破时间补偿：扣除本轮 Sw 修正对突破时间的影响 ----
+    % 2x2 块系统中交叉项 d(t_b)/dS_w0 非零：Sw 支路刚施加的 DeltaS 会改变突破时间，
+    % 若仍用原始失配驱动 K 支路，渗透率将为刚修掉的饱和度误差"还债"（块 Jacobi 污染）。
+    % 冻结速度场下突破时间沿流线化为一维特征问题：段 j 的饱和度以特征速度 f_w'(S)
+    % 传播，到达井端的时间为 (T_tot - tau_j)/f_w'(S_j)。用同一 MOC 引擎对新旧 Sw0
+    % 场各算一次并取差，引擎的近似误差在作差时抵消，delta_t_b 即交叉项的一阶贡献。
+    % 补偿只用当轮已有数据（SLN 的 TOF/TotalTOF、fw_data、更新前后的 SWAT 场），
+    % 不增加任何模拟调用；delta_t_b 按流量份额 a_m 合成到井级，并换算为采样间隔。
+    dtb_int = 0;
+    if decouple_enable
+        tb_old_m = inf(N_cand,1);
+        tb_new_m = inf(N_cand,1);
+        for m = 1:N_cand
+            sln_m   = linked_sln(m);
+            cells_m = sln_m.GLO_CELL;
+            tof_m   = sln_m.TOF;
+            Ttot_m  = sln_m.TotalTOF;
+            if numel(tof_m) < 2 || Ttot_m <= 0
+                continue;
+            end
+            valid_m = cells_m >= 1 & cells_m <= gridnum;
+            cells_m = cells_m(valid_m);
+            if isempty(cells_m)
+                continue;
+            end
+            tau_mid = (tof_m(1:end-1) + tof_m(2:end)) / 2;   % 段中点 TOF（秒），与 CELL 等长
+            tau_mid = tau_mid(valid_m);
+            fwp_o = interp1(fw_data(:,1), fwder, SWATnumarray(cells_m), 'linear', 0);
+            fwp_n = interp1(fw_data(:,1), fwder, SWATarraynew(cells_m), 'linear', 0);
+            tb_old_m(m) = min((Ttot_m - tau_mid) ./ max(fwp_o, eps_fwp)) / 86400;   % 天
+            tb_new_m(m) = min((Ttot_m - tau_mid) ./ max(fwp_n, eps_fwp)) / 86400;
+        end
+        fin_m = isfinite(tb_old_m) & isfinite(tb_new_m);
+        if any(fin_m) && sum(a_m(fin_m)) > 0
+            tb_moc_old = sum(a_m(fin_m) .* tb_old_m(fin_m)) / sum(a_m(fin_m));
+            tb_moc_new = sum(a_m(fin_m) .* tb_new_m(fin_m)) / sum(a_m(fin_m));
+            dtb_days   = tb_moc_old - tb_moc_new;   % >0：Sw 修正使突破提前
+            dtb_int    = dtb_days / dt_samp;        % 换算为 wcut 采样间隔
+            dtb_cap    = dtb_cap_frac * max(bc1 - st_case, 1);
+            dtb_int    = min(max(dtb_int, -dtb_cap), dtb_cap);   % 防首轮过冲
+        end
+    end
+    % ---- Eq.(27) 归一化见水时间失配（时间自各自投产时刻起算） ----
+    % tanh 软限幅：E_bt 经压缩后天然有界 (-1,1)，避免小 t_obs 井
+    % （实测见水极早的井原始 E_bt 可达 9~15）每轮触发满幅修正。
+    % [一阶解耦] t_sim 为补偿后的模拟突破时间：t_sim_raw - dtb_int，
+    % 即扣除本轮 Sw 更新经交叉项 d(t_b)/dS_w0 对突破时间的一阶贡献（见上 MOC 补偿段）。
+    t_sim_raw = bc1 - st_case;
+    t_obs = bo1 - st_obs;
+    t_sim = t_sim_raw - dtb_int;
+    E_bt_raw = (t_sim - t_obs) / max(t_obs,1);
+    E_bt     = tanh(E_bt_raw);
+
+    % ---- v2 含水率水平失配驱动（带符号，tanh 有界）----
+    % E_wc_raw > 0：模拟含水率整体偏高 → 需降低供水流线渗透率；
+    % E_wc_raw < 0：模拟含水率整体偏低 → 需提高供水流线渗透率。
+    E_wc_raw = wc_err_signed(i);
+    if isnan(E_wc_raw), E_wc_raw = 0; end
+
+    % 组合驱动：见水时间与含水率水平两信号加权；相互矛盾时自动抵消。
+    % 死区：两信号均在各自死区内（或抵消后很小）时不做修正。
+    % [修复②] 原式把两信号各自 tanh 到 (-1,1) 再相减：当两项对 K 的作用方向相反
+    % （即输入同号）且都较大时，E_bt 与 tanh(E_wc) 双双饱和到 ±1，相减恒趋近 0
+    % ⇒ 失配越极端，越必然被下面的"信号抵消"判据跳过（与设计意图相反）。
+    % 修复：先加权求和再统一 tanh，只在两信号量级真正相当时才抵消；符号约定一致。
+    if fix_etot_combine
+        E_tot = tanh(w_bt * E_bt_raw - (1 - w_bt) * E_wc_raw);
+    else
+        E_tot = w_bt * E_bt - (1 - w_bt) * tanh(E_wc_raw);
+    end
+    if abs(E_bt_raw) < e_bt_tol && abs(E_wc_raw) < e_wc_tol
+        waitbar(i/size(data_observed,2),wbar); continue;
+    end
+    if abs(E_tot) < 0.05
+        waitbar(i/size(data_observed,2),wbar); continue;   % 信号抵消，本轮不动
+    end
+
+    df_line = zeros(N_cand,1);
+    for m = 1:N_cand
+        SW = linked_sln(m).SW;
+        if isfield(linked_sln,'FW') && ~isempty(linked_sln(m).FW) ...
+                && sum(linked_sln(m).FR) > 0
+            fw = linked_sln(m).FW ./ max(linked_sln(m).FR, eps);  % 沿流线含水率 f_w(s)
+        else
+            fw = SW;                       % 无流量场时用 SW 代替 f_w
+        end
+        if numel(SW) < 3
+            continue;
+        end
+        % 水线前缘位置：SW 梯度最大处；上游(靠注水井)为波及侧，下游为未波及侧
+        dSW = diff(SW);
+        [maxdSW, fidx] = max(dSW);
+        if maxdSW < sw_front_min
+            continue;                      % 无明显前缘（已突破或未启动），增量取 0
+        end
+        idx_behind = fidx;                 % 前缘后方（波及侧）-> 假想推进到井筒后的井端状态
+        idx_ahead  = fidx + 1;             % 前缘前方（未波及侧）-> 当前井端背景状态
+        % Eq.(30)：a_m 经调和指数 kappa_w 折减（kappa=1 为严格流量加权；
+        % kappa=0.5 由表 5 标定，保留流量排序同时避免增量被份额过度摊薄）
+        df_line(m) = a_m(m)^kappa_w * max(0, fw(idx_behind) - fw(idx_ahead));
+    end
+
+    % ---- Eq.(31-33) 归一化贡献与组合贡献 ----
+    invT  = 1 ./ (T_tot + eps_tau);
+    R_T   = invT / sum(invT);                                   % Eq.(31)
+    s_tmp = df_line ./ (T_tot + eps_tau);
+    if sum(s_tmp) > 0
+        R_S = s_tmp / sum(s_tmp);                               % Eq.(32)
+    else
+        R_S = zeros(N_cand,1);
+    end
+    C_m = beta_weight * R_T + (1 - beta_weight) * R_S;          % Eq.(33)
+
+    % ---- Eq.(34) 预测突破后含水率增量（流线法求和） ----
+    df_line_p = sum(df_line);
+
+    % ---- Eq.(35) 实际突破后含水率增量 ----
+    % two_sample（默认）：与 Eq.(30) 的假想场景（单条流线前缘抵达井筒引起的含水率跳变）
+    %   物理对齐，取平滑实测曲线在见水时刻前后各一个采样点的差值，
+    %   避免导数阈值阶段定义把后续多流线陆续突破的累计上升也计入。
+    % stage：[t_b, t_e]，t_e 为突破后实测含水率导数首次低于 eps_df 的时刻（表 5 标定口径之一）。
+    if strcmpi(df_obs_mode, 'stage')
+        t0  = bo1;
+        seg = min(bo1 + 1, nTime):nTime;
+        k_e = find(df_observed_s(seg,i) < eps_df, 1, 'first');
+        if isempty(k_e), t1 = nTime; else, t1 = seg(k_e); end
+    else
+        t0 = max(bo1 - jump_back, 1);
+        t1 = min(bo1 + jump_fwd,  nTime);
+    end
+    df_obs_p = max(ds_observed(t1,i) - ds_observed(t0,i), 0);
+
+    % ---- Eq.(36) 有界因子 Lambda_f ----
+    Lam_f = min(1, abs(df_line_p - df_obs_p) / (abs(df_obs_p) + eps_f));
+
+    % ---- Eq.(37) 最小流线子集：按 C 降序累加 df_line 至 >= df_obs ----
+    [~, order] = sort(C_m, 'descend');
+    cum_df = cumsum(df_line(order));
+    M_star = find(cum_df >= df_obs_p, 1, 'first');
+    if isempty(M_star), M_star = N_cand; end
+    sel = order(1:M_star);
+
+    % ---- Eq.(38-39) 流线乘子 chi = exp(gamma*E_tot*Lambda_f*C_bar) ----
+    % v2 临界井加权：误差在 [fit_tol, swing_hi] 的井最接近 20% 达标线，
+    % 放大步长 swing_boost 倍，优先把它们推过阈值。
+    gamma_w = gamma_eff;
+    if ~isnan(wc_err(i)) && wc_err(i) >= fit_tol && wc_err(i) < swing_hi
+        gamma_w = gamma_eff * swing_boost;
+    end
+    C_bar = C_m(sel) / max(C_m(sel));                           % Eq.(38)
+    ln_chi = gamma_w * E_tot * Lam_f * C_bar;                   % Eq.(39)，组合驱动 E_tot
+    ln_chi = min(max(ln_chi, log(chi_min)), log(chi_max));
+
+    % ---- Eq.(40) 按 TOF 权重投影到网格 ----
+    for r = 1:M_star
+        m = sel(r);
+        sln_k = linked_sln(m);
+        cells = sln_k.GLO_CELL;
+        tof   = sln_k.TOF;
+        if numel(tof) < 2 || sln_k.TotalTOF <= 0
+            continue;
+        end
+        dtof = diff(tof);
+        dtof(dtof < 0) = 0;
+        % CELL/SW/FLORES 为段数据（每流线 n_node-1 个），与 diff(TOF) 等长对齐
+        c_cells = cells;
+        valid = c_cells >= 1 & c_cells <= gridnum & isfinite(dtof);
+        c_cells = c_cells(valid);
+        dtof = dtof(valid);
+        if isempty(c_cells)
+            continue;
+        end
+        w_cell = accumarray(c_cells, dtof, [gridnum,1]);
+        omega  = w_cell / sln_k.TotalTOF;      % TOF 分数权重 omega_{m,p,k}
+        touched = omega > 0;
+        dlnK_num(touched) = dlnK_num(touched) + omega(touched) * ln_chi(r);
+        dlnK_den(touched) = dlnK_den(touched) + omega(touched);
+    end
+
+    % ---- 汇总日志 ----
+    log_well{end+1,1} = raw_w_o{i};
+    log_tbs(end+1,1)  = t_sim;   log_tbo(end+1,1)  = t_obs;
+    log_Ebt(end+1,1)  = E_bt_raw;
+    log_Ncand(end+1,1)= N_cand;  log_Mstar(end+1,1)= M_star;
+    log_dfline(end+1,1)= df_line_p; log_dfobs(end+1,1)= df_obs_p;
+    log_Lam(end+1,1)  = Lam_f;
+    log_wcerr(end+1,1)= wc_err(i);
+    log_Ewc(end+1,1)  = E_wc_raw;
+    log_Etot(end+1,1) = E_tot;
+    log_Ebt0(end+1,1) = (t_sim_raw - t_obs) / max(t_obs,1);   % 补偿前 E_bt（诊断）
+    log_dtb(end+1,1)  = dtb_int;                              % MOC 补偿量（采样间隔）
+
+    waitbar(i/size(data_observed,2),wbar)
+end
+close(wbar)
+
+% ---- Eq.(40-41) 网格修正量与渗透率更新 ----
+dlnK = zeros(gridnum,1);
+mask = dlnK_den > 0;
+dlnK(mask) = dlnK_num(mask) ./ dlnK_den(mask);
+
+nExtra = numel(PERMXnumarray) - gridnum;      % LGR 网格不修正
+if nExtra > 0
+    dlnK_full = [dlnK; zeros(nExtra,1)];
+else
+    dlnK_full = dlnK;
+end
+
+PERMXarraynew = PERMXnumarray .* exp(dlnK_full);
+PERMXarraynew = min(PERMXarraynew, PERM_max);
+PERMXarraynew = max(PERMXarraynew, PERM_min);
+PERMYarraynew = PERMYnumarray .* exp(dlnK_full);
+PERMYarraynew = min(PERMYarraynew, PERM_max);
+PERMYarraynew = max(PERMYarraynew, PERM_min);
+
+grdecl_perm.PERMX = PERMXarraynew(:);
+grdecl_perm.PERMY = PERMYarraynew(:);
+if has_PERMZ
+    PERMZarraynew = PERMZnumarray .* exp(dlnK_full);
+    PERMZarraynew = min(PERMZarraynew, PERM_max);
+    PERMZarraynew = max(PERMZarraynew, PERM_min);
+    grdecl_perm.PERMZ = PERMZarraynew(:);
+end
+
+% 输出前备份输入文件（若输出路径与输入相同）
+if PERM_path == PERM_outpath
+    bak = PERM_path + ".bak_" + string(datetime('now','Format','yyyyMMdd_HHmmss'));
+    copyfile(PERM_path, bak);
+    disp("已备份原渗透率文件到 " + bak);
+end
+writeGRDECL(grdecl_perm, PERM_outpath);
+disp("更新后的渗透率场已写出: " + PERM_outpath);
+
+% ------------------------- 写出渗透率汇总日志 ----------------------------
+logpath = fullfile(fileparts(PERM_outpath), 'perm_inversion_summary.txt');
+fid = fopen(logpath,'w');
+fprintf(fid,'well\tt_sim\tt_obs\tE_bt\tE_bt_soft\tE_wc\tE_tot\tN_cand\tM_star\tdf_line\tdf_obs\tLambda_f\twc_err\tE_bt_raw\tdt_b_moc\n');
+for i = 1:numel(log_well)
+    fprintf(fid,'%s\t%.1f\t%.1f\t%.4f\t%.4f\t%.4f\t%.4f\t%d\t%d\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%.3f\n', ...
+        log_well{i}, log_tbs(i), log_tbo(i), log_Ebt(i), tanh(log_Ebt(i)), log_Ewc(i), log_Etot(i), ...
+        log_Ncand(i), log_Mstar(i), log_dfline(i), log_dfobs(i), log_Lam(i), log_wcerr(i), ...
+        log_Ebt0(i), log_dtb(i));
+end
+fclose(fid);
+disp("渗透率汇总日志已写出: " + logpath);
+% 注：前 13 列与 1020 版同格式（下游 kappa/Delta_f^obs 扫描脚本可直接读取）；
+% 末两列 E_bt_raw（补偿前）与 dt_b_moc（MOC 补偿量，采样间隔）为 1102 新增。
+
+% ------------------------- 写出一阶解耦诊断 ----------------------------
+diagpath = fullfile(fileparts(PERM_outpath), 'decouple_diagnostic.txt');
+fid = fopen(diagpath,'w');
+fprintf(fid,'well\tt_sim_raw\tdt_b_moc_int\tE_bt_before\tE_bt_after\tentangle_ratio\n');
+ent_ratio = abs(log_dtb) ./ max(abs(log_tbs + log_dtb - log_tbo), 1);
+for i = 1:numel(log_well)
+    fprintf(fid,'%s\t%.2f\t%.3f\t%.4f\t%.4f\t%.4f\n', ...
+        log_well{i}, log_tbs(i)+log_dtb(i), log_dtb(i), log_Ebt0(i), log_Ebt(i), ent_ratio(i));
+end
+fclose(fid);
+fprintf(['一阶解耦诊断：纠缠度 |dt_b|/|t_sim-t_obs| 中位 %.4f、均值 %.4f、最大 %.4f ' ...
+    '（该值即突破失配中由饱和度误差贡献的占比）\n'], ...
+    median(ent_ratio), mean(ent_ratio), max(ent_ratio));
+disp("解耦诊断日志已写出: " + diagpath);
+
+% --------------------- 纠缠度随迭代曲线（逐轮累积刷新） ---------------------
+% 每轮向 decouple_entanglement_history.txt 追加一行统计（同轮重跑自动覆盖），
+% 再由全部历史记录重绘 decouple_entanglement.png；无需任何额外正演。
+if decouple_plot && decouple_enable
+    outdir_diag = fileparts(PERM_outpath);
+    histpath = fullfile(outdir_diag, 'decouple_entanglement_history.txt');
+    hist = [];
+    if isfile(histpath)
+        try
+            hist = readmatrix(histpath, 'NumHeaderLines', 1);
+        catch
+            hist = [];
+        end
+    end
+    row_new = [iter_index, numel(ent_ratio), median(ent_ratio), mean(ent_ratio), max(ent_ratio)];
+    if ~isempty(hist)
+        hist(hist(:,1) == iter_index, :) = [];   % 同一轮重跑：覆盖旧记录
+    end
+    hist = sortrows([hist; row_new], 1);
+    fid_h = fopen(histpath, 'w');
+    fprintf(fid_h, 'iter\tn_well\tmedian\tmean\tmax\n');
+    fprintf(fid_h, '%d\t%d\t%.6f\t%.6f\t%.6f\n', hist.');
+    fclose(fid_h);
+
+    fig_h = figure('Visible', 'off', 'Position', [100 100 760 480]);
+    plot(hist(:,1), hist(:,3), '-o', 'LineWidth', 1.6, 'MarkerSize', 5); hold on;
+    plot(hist(:,1), hist(:,4), '-s', 'LineWidth', 1.4, 'MarkerSize', 5);
+    plot(hist(:,1), hist(:,5), ':^', 'LineWidth', 1.2, 'MarkerSize', 5);
+    grid on; xlabel('Outer iteration');
+    ylabel('Entanglement ratio |\delta t_b| / |t_{sim}-t_{obs}|');
+    legend('Median', 'Mean', 'Max', 'Location', 'northeast');
+    title('First-order decoupling diagnostic (updated each iteration)');
+    pngpath = fullfile(outdir_diag, 'decouple_entanglement.png');
+    print(fig_h, pngpath, '-dpng', '-r200');
+    close(fig_h);
+    disp("纠缠度曲线已刷新: " + pngpath);
+end
+
+fprintf('渗透率反演：共处理 %d 口井，修正网格 %d 个（占 %.2f%%）\n', ...
+    numel(log_well), nnz(mask), 100*nnz(mask)/gridnum);
+
+% ------------------------- 可选诊断图 ------------------------------------
+if make_plots
+    for i = 1:min(5,size(data_observed,2))
+        ci = obswid2casewid(i);
+        if ci <= 0, continue; end
+        figure
+        scatter(mis_datetime_wc,data_observed(:,i)); hold on
+        plot(mis_datetime_wc,data_case(:,ci))
+        plot(mis_datetime_wc,df_case(:,ci))
+        if ~isnan(break_time_observed{i})
+            scatter(mis_datetime_wc(break_time_observed{i}),data_observed(break_time_observed{i},i),'r*')
+        end
+        if ~isnan(break_time_case{ci})
+            scatter(mis_datetime_wc(break_time_case{ci}),data_case(break_time_case{ci},ci),'b*')
+        end
+        title(raw_w_o{i})
+    end
+end
+
+fprintf('合并反演完成：SWAT -> %s，PERM -> %s\n', SW_writepath, PERM_outpath);
 
 end
 

@@ -1,5 +1,62 @@
 # Changelog
 
+## v1.2.0 — 2026-11-09
+
+**First-order decoupling of the saturation and permeability branches.** The two
+corrections are driven by one simulation, and until now they were evaluated
+*simultaneously* from it — a block-Jacobi step of the 2 × 2 system
+
+    | a  b | | ΔK    |   | r_K |      a = ∂t_b/∂K     b = ∂t_b/∂S_w0
+    | c  d | | ΔS_w0 | = | r_S |      c = ∂f_w/∂K     d = ∂f_w/∂S_w0
+
+so the permeability branch was charged with `b·ΔS_w0`: it paid again for a
+saturation error that the saturation branch had already settled in the same
+iteration.
+
+The drivers now run a compensated Gauss–Seidel step instead, still with **one
+simulator run per outer iteration**:
+
+1. Part 5, saturation update, as before;
+2. the breakthrough time is evaluated twice with the same MOC engine on the
+   **frozen** streamlines — once with the new `S_w0` field and once with the old
+   one — and the difference `δt_b = t_b(S_new) − t_b(S_old)` is taken. Because
+   the two evaluations share the engine and the streamlines, the engine's own
+   approximation error cancels in the difference;
+3. Part 6, permeability update, driven by the compensated mismatch
+   `E_p^comp = (t_b^sim − δt_b) − t_b^obs`.
+
+Everything the compensation needs (`TOF`/`TotalTOF` of the SLN file, the
+`f_w(S_w)` table, both saturation fields) is already in memory, so it costs a
+vectorised pass over the wells — **no extra simulation, no extra streamline
+read**. The cross contamination falls from `O(ε)` to `O(ε²)`; the residual term
+is the second-order migration of the velocity field caused by the mobility
+change of the updated saturation, which the next forward run re-measures on
+recalculated streamlines. Hence *first-order*, not exact.
+
+* Execution order inside one iteration is now saturation → compensation →
+  permeability (it was permeability first in v1.1.x). Both fields are still
+  written back together at the end of the call.
+* New parameters (Class B, copy the paper values): `decouple_enable` (`true`),
+  `eps_fwp` (`1e-4`, floor on `f_w'(S)`), `dtb_cap_frac` (`0.5`, cap on
+  `abs(dt_b)` per well) and `decouple_plot` (`true`).
+* New diagnostics, written next to `PERM_outpath`:
+  `decouple_diagnostic.txt` (raw/compensated `E_bt`, `δt_b`, entanglement ratio
+  per well), `decouple_entanglement_history.txt` (one statistics row appended
+  per iteration) and `decouple_entanglement.png`.
+  `perm_inversion_summary.txt` keeps its first 13 columns and appends
+  `E_bt_raw` and `dt_b_moc`.
+* `decouple_enable = false` reproduces the v1.1.x block-Jacobi behaviour
+  exactly — that switch is the ablation arm of the manuscript, so both arms are
+  available from one driver.
+* README: new §1.1 (order within the iteration, the block system and the
+  compensation), §0.2/§8.2 parameter class, §10 output table, §11 method-to-code
+  map (Parts 5 and 6 swapped to match the new order) and §12 limitation note.
+  The citation block is updated to the present title of the manuscript.
+
+Nothing else was touched: the streamline reading, the minimum-subset selection,
+the multipliers, the back-projection and the write-out are byte-identical to
+v1.1.10 apart from the reordering noted above.
+
 ## v1.1.10 — 2026-10-20
 
 **Corrected the description of what `TOF_times` does.** The previous note claimed

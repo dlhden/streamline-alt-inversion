@@ -1,13 +1,13 @@
 # streamline-alt-inversion
 
-MATLAB implementation of the **streamline-based alternating inversion of initial
-water saturation and permeability** for automatic history matching of
+MATLAB implementation of the **first-order decoupled alternating inversion of
+initial water saturation and permeability** for automatic history matching of
 large-scale multi-well waterflood reservoirs.
 
 This repository accompanies the manuscript:
 
-> **Multi-Parameter Fine-Scale Alternating Inversion Method for Large-Scale
-> Multi-Well Waterflooding Reservoirs**
+> **First-order decoupled alternating inversion of initial water saturation and
+> permeability for large-scale waterflood history matching**
 > Lihui Deng, Han Zhang, Chengcheng Niu, Xuri Huang, Hu Jia, Wei He, Li Yang
 > *Petroleum Science* (submitted; citation to be updated upon publication)
 
@@ -79,6 +79,17 @@ manuscript required changing them: `gamma_relax`, `gamma_decay`, `fit_tol`,
 `dedup_cells`, `normalize_cnt`, `soft_clip`, `sw_write_mode`, `sw_seg_weight`,
 `sw_dedup_seg`, `fix_etot_combine`, `fix_break_fallback`.
 
+The first-order-decoupling block is also copyable, but treat it as a **switch**
+rather than a tuning knob: `decouple_enable` (`true`) turns the breakthrough-time
+compensation of §1 on, `eps_fwp` (`1e-4`) is only a floor on `f_w'(S)` that
+prevents a division by zero in the low-saturation tail, and `dtb_cap_frac` (`0.5`)
+caps the per-well compensation at that fraction of the simulated breakthrough
+time. Lower `dtb_cap_frac` only if the very first iteration shows a compensated
+breakthrough time crossing the observed one (sign flip of `E_bt`). `decouple_plot`
+(`true`) refreshes the entanglement figure after every iteration. Setting
+`decouple_enable = false` restores exactly the uncompensated block-Jacobi
+behaviour of the 1020 drivers, which is the ablation arm of the manuscript.
+
 **Class C — copy, then rescale if your discretisation differs.** These are
 counts of grid cells or snapshots, so a much coarser / finer grid or a different
 dump frequency needs a proportional change: `sw_end_cells` (5), `sw_end_frac`
@@ -95,6 +106,7 @@ per outer iteration n = 1, 2, … :
   2. export  wcut  (item 4) — the only production export the driver needs
   3. MATLAB:  startup;  iter_index = n;  main_SL_inversion_C2
        -> PERM_iter.GRDECL, SW_iter.GRDECL, perm_inversion_summary.txt
+       -> decouple_diagnostic.txt, decouple_entanglement_history.txt / .png
   4. import both updated fields into the deck as property updates of the same grid
   5. n <- n + 1, go to 1
 stop when the history-period water-cut fit stops improving; select the model on the
@@ -132,6 +144,57 @@ initial-saturation error is not silently absorbed by artificial permeability
 changes, and the permeability correction is restricted to the dynamically
 sufficient subset of streamlines whose cumulative hypothetical water-cut
 increment reaches the observed post-breakthrough increment.
+
+### 1.1 Order within the iteration — first-order decoupling
+
+The two branches are the two rows of a 2 × 2 block system whose unknowns are the
+permeability and initial-saturation corrections:
+
+```
+| a  b | | ΔK     |   | r_K |
+|      | |        | = |     | ,   a = ∂t_b/∂K      b = ∂t_b/∂S_w0
+| c  d | | ΔS_w0  |   | r_S |     c = ∂f_w/∂K      d = ∂f_w/∂S_w0
+```
+
+The diagonal entries are the intended sensitivities; the off-diagonal ones are
+the coupling. `b ≠ 0` because a wrong initial saturation moves the front and
+therefore shifts the breakthrough time, and `c ≠ 0` because a wrong permeability
+redistributes the injection and therefore shifts the water-cut level. Evaluating
+both branches on one simulation is a **block-Jacobi** step: the cross terms are
+ignored, so the permeability branch is charged with `b·ΔS_w0` — it pays again for
+a saturation error that the saturation branch has already settled in the same
+iteration.
+
+The drivers therefore execute the branches in a fixed order and compensate the
+cross term in between, which turns the block-Jacobi step into a compensated
+Gauss–Seidel one:
+
+| # | Step | Where |
+| --- | --- | --- |
+| 1 | saturation update from the water-cut mismatch | Part 5 |
+| 2 | MOC compensation: evaluate `t_b` twice on the **frozen** streamlines, with the new and with the old `S_w0`, and take `δt_b = t_b(S_new) − t_b(S_old)` — days, then converted to the wcut sampling interval, the unit of `t_sim` / `t_obs` | inside the Part 6 loop |
+| 3 | permeability update driven by `E_p^comp = (t_b^sim − δt_b) − t_b^obs` | Part 6 |
+
+Two properties make this free of cost:
+
+* The compensation runs on the **same** frozen streamlines and with the same MOC
+  engine as the forward breakthrough estimate, so the engine's own approximation
+  error cancels in the difference `δt_b` — only the change caused by the
+  saturation update survives.
+* Every quantity it needs (the `TOF`/`TotalTOF` records of the SLN file, the
+  `f_w(S_w)` table, both saturation fields) is already in memory. **No extra
+  simulator run and no extra streamline pass** is performed; the compensation is
+  a vectorised operation over the wells of the current iteration.
+
+The cross contamination drops from `O(ε)` to `O(ε²)`, `ε` being the relative
+saturation correction. What remains is the second-order migration of the
+velocity field caused by the mobility change of the updated saturation; the next
+forward run re-evaluates it on fully recalculated streamlines, which is why the
+scheme is *first-order* decoupled and not exactly decoupled.
+
+Set `decouple_enable = false` to switch the compensation off: the permeability
+branch then uses the raw mismatch, i.e. the block-Jacobi behaviour of the 1020
+drivers. That switch is the ablation arm of the manuscript.
 
 ## 2. Repository layout
 
@@ -448,6 +511,16 @@ against the baseline methods is not favoured by a per-case calibration.
 | `sw_dedup_seg` | `false` | Keep per-cell de-duplication in segment mode (see the comment in the driver; `true` disables the segment fix). |
 | `endtime_weight` | `3` | **Unused** (kept from the original codes). |
 
+**First-order decoupling** (§1.1; the compensation itself is not a calibrated
+quantity — these four values only bound and report it)
+
+| Parameter | Paper | Meaning |
+| --- | --- | --- |
+| `decouple_enable` | `true` | Switch of the MOC breakthrough-time compensation. `false` = block-Jacobi, i.e. the permeability branch uses the raw mismatch (the ablation arm). Both drivers ship with `true`; the two switches below are inactive when it is `false`. |
+| `eps_fwp` | `1e-4` | Floor on `f_w'(S)` in the characteristic velocity, `dt/dS = 1/(φ f_w'(S))`. Only the flat, low-saturation tail of the `f_w` curve can approach zero; the floor prevents a division by zero there and does not bind in the water bank. |
+| `dtb_cap_frac` | `0.5` | Upper bound on the per-well compensation, `abs(dt_b) <= dtb_cap_frac * max(t_b^sim, 1)`, with `dt_b` and `t_b^sim` counted in **wcut sampling intervals** (the unit of `t_sim` / `t_obs` in `perm_inversion_summary.txt`; the MOC engine works in days and the difference is converted before use). It only matters in the first iterations, where the saturation field can still change a lot; if a well's compensated breakthrough time crosses the observed one (sign flip of `E_bt` between the raw and the compensated column of `decouple_diagnostic.txt`), lower this value before touching anything else. |
+| `decouple_plot` | `true` | Append the entanglement statistics of the iteration to `decouple_entanglement_history.txt` and redraw `decouple_entanglement.png`. Figures only — no effect on the fields. |
+
 ### 8.3 Class C — copy, then rescale with your discretisation
 
 These are counts of cells or snapshots, not dimensionless constants:
@@ -468,6 +541,7 @@ These are counts of cells or snapshots, not dimensionless constants:
 | date parsing | `parse_run_date` (Chinese locale `zh_CN`, e.g. `01-1月-1995`) for both files | plain `datetime(...)` (ISO-style dates) |
 | mismatch built from `wcut` | same code; the two blocks are found automatically via `SUMMARY OF RUN` | same code; the two blocks are located by `wcut_fixed_cols` |
 | model | 370 × 252 × 12 = 1 118 880 cells, no LGR | WLW block, with `CARFIN` refinement (auto-mapped) |
+| first-order decoupling | same code, `decouple_enable = true` | same code, `decouple_enable = true` |
 
 Everything else — grid handling, breakthrough detection, minimum-subset
 selection, multipliers, back-projection, write-out — is the same code. If your
@@ -483,7 +557,10 @@ is the more robust starting point when your export carries block markers.
 | --- | --- |
 | `PERM_iter.GRDECL` | `PERMX`, `PERMY`, `PERMZ` (when present) and `NTG` after the streamline-multiplier projection |
 | `SW_iter.GRDECL` | `SWAT` and `NTG` after the back-projection of the water-cut mismatch (`PORO` only if `write_slnmask_to_poro = true`) |
-| `perm_inversion_summary.txt` | per-well table: `well, t_sim, t_obs, E_bt, E_bt_soft, E_wc, E_tot, N_cand, M_star, df_line, df_obs, Lambda_f, wc_err` |
+| `perm_inversion_summary.txt` | per-well table: `well, t_sim, t_obs, E_bt, E_bt_soft, E_wc, E_tot, N_cand, M_star, df_line, df_obs, Lambda_f, wc_err`, plus `E_bt_raw` and `dt_b_moc` appended when `decouple_enable = true` (columns 1–13 keep their layout) |
+| `decouple_diagnostic.txt` | per-well decoupling table: raw and compensated breakthrough mismatch, `dt_b` (in wcut sampling intervals, same unit as `t_sim`), and the entanglement ratio `abs(dt_b)/abs(E_bt_raw)` — this is the file to read if a permeability update looks like it is still paying for a saturation error |
+| `decouple_entanglement_history.txt` | one statistics row (median / mean / max of the entanglement ratio) appended per iteration; re-running the same `iter_index` overwrites that row |
+| `decouple_entanglement.png` | median / mean / max entanglement ratio against the iteration index, redrawn from the full history file |
 | diagnostic figures | only when `make_plots = true` |
 
 > The written GRDECL files are **property files**: they contain the keys the
@@ -501,8 +578,12 @@ the drivers are placeholders (`path/to/your/case`).
 | water-cut reading, breakthrough detection, `E_bt`, `E_wc` | Part 2 |
 | mismatch series built from the two `wcut` blocks (`Δf_w = f_w^sim − f_w^obs`) | Part 3 |
 | streamline reading (once per iteration) and LGR mapping | Part 4 (`file2Streamline`) |
-| minimum-streamline-subset selection, multipliers, projection | Part 5 |
-| back-projection of the water-cut mismatch | Part 6 |
+| back-projection of the water-cut mismatch → `SW_iter.GRDECL` | Part 5 |
+| 2 × 2 block system and the MOC breakthrough-time compensation `δt_b` (§3.4 of the manuscript) | Part 6, guarded by `decouple_enable` |
+| minimum-streamline-subset selection, multipliers, projection → `PERM_iter.GRDECL` | Part 6 |
+
+Parts 5 and 6 are executed in that order inside one iteration; the compensation
+sits between them, still inside Part 6, on the same frozen streamlines.
 
 ## 12. Notes and limitations
 
@@ -511,6 +592,12 @@ the drivers are placeholders (`path/to/your/case`).
   velocity fields are held fixed. The interval matches the production-data
   sampling, and the flow field is refreshed after every outer iteration, because
   every outer iteration is a full simulation.
+* The decoupling is **first-order only**. The compensation removes the
+  breakthrough-time cross term `b·ΔS_w0` exactly as it is seen by the MOC engine
+  on the frozen streamlines, but the updated saturation also changes the
+  viscosity ratio and hence the velocity field; that effect is second order in
+  the saturation correction and is re-measured by the next forward run, which
+  rebuilds the streamlines. No claim of an exact block solve is made.
 * All saturation updates are bounded per cell and per producer and decay with
   the iteration index, so the initial hydrocarbon pore volume changes only
   marginally (below 0.2 % in the reported applications).
@@ -557,6 +644,29 @@ issue tracker.
 
 两个更新共用同一时刻的流线快照，避免初始饱和度误差被渗透率"顶包"。流线每轮只读一次。
 
+**一阶解耦（1102 起默认开启，`decouple_enable = true`）**：两条支路实际是一个 2×2 块系统，
+非对角元 `b = ∂t_b/∂S_w0` 与 `c = ∂f_w/∂K` 即耦合。若两条支路在同一次模拟结果上同时求值，
+等于做一步**块 Jacobi**：交叉项被丢掉，渗透率支路要替同轮刚修掉的饱和度误差再"还一次账"。
+本驱动改为**补偿式 Gauss–Seidel**：
+
+1. 先做饱和度修正（第五部分）；
+2. 在**冻结流线**上用同一 MOC 引擎对新旧 `S_w0` 场各求一次突破时间并取差
+   `δt_b = t_b(S_new) − t_b(S_old)`（同一引擎、同一流线，近似误差作差抵消；
+   引擎算的是天，取差后再折算成 wcut 采样间隔，与 `t_sim`/`t_obs` 同一单位）；
+3. 渗透率支路改用补偿失配 `E_p^comp = (t_b^sim − δt_b) − t_b^obs`（第六部分）。
+
+所需数据（SLN 的 `TOF`/`TotalTOF`、`f_w` 表、新旧饱和度场）当轮已在内存，
+**不增加任何 Intersect 调用、不额外读一遍流线**，只是在井维上做一次向量化运算。
+交叉污染由 `O(ε)` 降到 `O(ε²)`；残差是饱和度更新引起流度变化、进而使速度场发生的二阶迁移，
+由下一次正演在重算流线上重新度量 —— 故称**一阶**解耦。
+
+每轮另输出三份诊断（写在 `PERM_outpath` 同目录）：
+`decouple_diagnostic.txt`（逐井补偿前后 `E_bt`、`δt_b`、纠缠度 `abs(δt_b)/abs(E_bt_raw)`）、
+`decouple_entanglement_history.txt`（逐轮一行统计，同居同轮重跑自动覆盖）、
+`decouple_entanglement.png`（中位/均值/最大三条曲线）。
+`perm_inversion_summary.txt` 前 13 列格式不变，末尾追加 `E_bt_raw`、`dt_b_moc` 两列。
+`decouple_enable = false` 即退回 1020 版的无补偿块 Jacobi 行为（论文的消融臂）。
+
 **依赖**：MATLAB R2020b 及以上即可 —— MRST 已**内置**在 `libs/mrst`（MRST 2024b
 裁剪版，5.5 MB，GPL-3.0），无需另行安装；`Krw.xlsx` 用 `xlsread` 读取，故 Windows +
 Excel 环境最省事（无 Excel 时把该行换成 `readmatrix` 或注释掉该段）。
@@ -582,10 +692,7 @@ Excel 环境最省事（无 Excel 时把该行换成 `readmatrix` 或注释掉�
     夹住 `backTOF`，故可满足段自井底数起占流线全长 `f = elaps×86400/(TOF_times×T_tot[秒])`，
     还取决于已历时间与总飞行时间。快照逐年一帧（`elaps ≤ 365 d`）、`T_tot ≈ 1e7 s` 时，
     `TOF_times=1500` 给出 `f ≤ 0.2%`，即只剩井壁前 1～2 个节点可选；两案例相差 13 倍（1500 / 20000）。
-    `SW_TOF[天] = TOF[秒]/86400 × TOF_times`；它不是单位换算，取值 c 时反投影边界落在每条流线末 1/c 段内。
-    取值与模拟器的流线输出单位、观测窗口（重构间隔）有关，两个案例相差 13 倍（1500 / 20000）。
-    有关。本仓库两案例分别取 1500（C2）与 20000（WLW），**相差 13 倍**。取错会让反投影
-    时间窗整体错位，饱和度修正完全打不准 —— 结果异常时先查这个参数。
+    取错会让反投影时间窗整体错位，饱和度修正完全打不准 —— 结果异常时先查这个参数。
   * `SW_min` / `SW_max`：饱和度更新的截断上下限，通常分别取束缚水饱和度与
     `1 − S_orw`（或 deck 的含水饱和度上限）；`SW_max` 不能超过 deck 上限。
   * `kappa_w` + `df_obs_mode`：二者的**成对**标定（论文表 5）。最优点随区块变
@@ -596,7 +703,12 @@ Excel 环境最省事（无 Excel 时把该行换成 `readmatrix` 或注释掉�
 * **[B] 可直接沿用论文值**：`gamma_relax/gamma_decay`、`fit_tol`、`swing_hi/swing_boost`、
   `e_bt_tol/e_wc_tol`、`w_bt`、`beta_weight`、`eps_tau/eps_f/eps_df`、`jump_back/jump_fwd`、
   `chi_min/chi_max`、`sw_front_min`、`alpha`、`max_vary`、`decay_times`、`sw_decay`、
-  `mis_tol` 以及各布尔开关（两个已发表算例均未改动）。
+  `mis_tol`、解耦四项（`decouple_enable=true`、`eps_fwp=1e-4`、`dtb_cap_frac=0.5`、
+  `decouple_plot=true`）以及各布尔开关（两个已发表算例均未改动）。
+  解耦四项中只有 `decouple_enable` 是开关，其余三项只界定/报告补偿强度：
+  `eps_fwp` 只是 `f_w'(S)` 的下限（防低饱和段除零），`dtb_cap_frac` 限制单井补偿量
+  `abs(δt_b) ≤ dtb_cap_frac × max(t_b^sim, 1 天)`；若首轮出现补偿后突破时间越过实测
+  （`E_bt` 原始列与补偿列符号相反），先调小 `dtb_cap_frac`。
 * **[C] 可沿用，但网格尺度或快照间隔差得多时按比例改**：`sw_end_cells`、`sw_end_frac`、
   `sw_seg_maxlen`、`sln_expand_nb`。
 
